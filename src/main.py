@@ -8,24 +8,12 @@ from Rhino.Geometry import Brep, Mesh, MeshFace, MeshingParameters, Point3d, Pol
 class BrepPolygonizer:
     """Converts smooth Brep surfaces into polygonal polysurfaces."""
 
-    def __init__(self, density: float) -> None:
-        """Initialize the BrepPolygonizer.
-
-        Args:
-            density: Mesh density parameter. Higher values create more polygons.
-                    Typical range: 0.01 (coarse) to 10.0 (fine).
-        """
-        self.density = density
+    def __init__(self, piece_size: float) -> None:
+        """Initialize the BrepPolygonizer."""
+        self.piece_size = piece_size
 
     def polygonize(self, brep: Brep) -> Optional[Brep]:
-        """Convert a smooth Brep into a polygonal polysurface.
-
-        Args:
-            brep: The input Brep to polygonize.
-
-        Returns:
-            A new Brep composed of planar polygon faces, or None if conversion fails.
-        """
+        """Convert a smooth Brep into a polygonal polysurface."""
         if not brep.IsValid:
             return None
 
@@ -39,15 +27,8 @@ class BrepPolygonizer:
         return polygonal_brep
 
     def _brep_to_mesh(self, brep: Brep) -> Optional[Mesh]:
-        """Convert a Brep to a mesh using the density parameter.
-
-        Args:
-            brep: The Brep to mesh.
-
-        Returns:
-            A mesh representation of the Brep, or None if meshing fails.
-        """
-        # Create mesh parameters based on density
+        """Convert a Brep to a mesh using the piece_size parameter."""
+        # Create mesh parameters based on piece_size
         mesh_params = self._create_mesh_parameters()
 
         # Generate mesh from Brep
@@ -72,16 +53,12 @@ class BrepPolygonizer:
         return joined_mesh
 
     def _create_mesh_parameters(self) -> MeshingParameters:
-        """Create meshing parameters based on the density value.
-
-        Returns:
-            MeshingParameters configured for the specified density.
-        """
+        """Create meshing parameters based on the piece_size value."""
         params = MeshingParameters.Default
 
-        # Scale parameters based on density
-        # Higher density = smaller edge length = more faces
-        edge_length = 1.0 / self.density if self.density > 0 else 1.0
+        # Use piece_size directly as edge length
+        # Larger piece_size = larger edge length = fewer, bigger faces
+        edge_length = self.piece_size if self.piece_size > 0 else 1.0
 
         params.MaximumEdgeLength = edge_length
         params.MinimumEdgeLength = edge_length * 0.1
@@ -95,14 +72,7 @@ class BrepPolygonizer:
         return params
 
     def _mesh_to_brep(self, mesh: Mesh) -> Optional[Brep]:
-        """Convert a mesh into a Brep polysurface.
-
-        Args:
-            mesh: The mesh to convert.
-
-        Returns:
-            A Brep where each mesh face becomes a planar surface, or None if fails.
-        """
+        """Convert a mesh into a Brep polysurface."""
         if not mesh or mesh.Faces.Count == 0:
             return None
 
@@ -129,15 +99,7 @@ class BrepPolygonizer:
         return joined_breps[0]
 
     def _create_face_brep(self, mesh: Mesh, face_index: int) -> Optional[Brep]:
-        """Create a Brep surface from a single mesh face.
-
-        Args:
-            mesh: The source mesh.
-            face_index: Index of the face to convert.
-
-        Returns:
-            A planar Brep surface representing the mesh face, or None if creation fails.
-        """
+        """Create a Brep surface from a single mesh face."""
         face = mesh.Faces[face_index]
 
         # Get face vertices
@@ -149,15 +111,7 @@ class BrepPolygonizer:
         return self._create_planar_surface(vertices)
 
     def _get_face_vertices(self, mesh: Mesh, face: MeshFace) -> list[Point3d]:
-        """Extract vertices from a mesh face.
-
-        Args:
-            mesh: The source mesh.
-            face: The mesh face.
-
-        Returns:
-            List of vertices defining the face (3 for triangles, 4 for quads).
-        """
+        """Extract vertices from a mesh face."""
         vertices: list[Point3d] = []
 
         # Convert Point3f to Point3d
@@ -172,14 +126,7 @@ class BrepPolygonizer:
         return vertices
 
     def _create_planar_surface(self, vertices: list[Point3d]) -> Optional[Brep]:
-        """Create a planar Brep surface from a list of vertices.
-
-        Args:
-            vertices: The vertices defining the polygon (ordered).
-
-        Returns:
-            A planar Brep surface, or None if creation fails.
-        """
+        """Create a planar Brep surface from a list of vertices."""
         if len(vertices) < 3:
             return None
 
@@ -210,10 +157,10 @@ class BrepPolygonizer:
 
 inputs = globals()
 shape: Optional[Brep] = inputs["shape"]
-density: Optional[float] = inputs["density"]
+piece_size: Optional[float] = inputs["piece_size"]
 
-if shape is None or density is None:
+if shape is None or piece_size is None:
     result = None
 else:
-    polygonizer = BrepPolygonizer(density)
+    polygonizer = BrepPolygonizer(piece_size)
     result = polygonizer.polygonize(shape)
