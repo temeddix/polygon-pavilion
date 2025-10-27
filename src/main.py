@@ -119,6 +119,9 @@ class BrepPolygonizer:
 
         # Join all surfaces into a single Brep
         joined_breps_iterable = Brep.JoinBreps(surfaces, 0.001)
+        if joined_breps_iterable is None:  # type: ignore[comparison-overlap]
+            return None
+
         joined_breps = list(joined_breps_iterable)
         if not joined_breps:
             return None
@@ -195,6 +198,9 @@ class BrepPolygonizer:
 
         # Try to create a planar surface from the closed curve
         breps_iterable = Brep.CreatePlanarBreps(curve, 0.001)
+        if breps_iterable is None:  # type: ignore[comparison-overlap]
+            return None
+
         breps = list(breps_iterable)
         if not breps:
             return None
