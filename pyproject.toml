@@ -2,7 +2,7 @@
 name = "polygon-pavilion"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = ["rhino-stubs-typed~=8.20.25157"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
