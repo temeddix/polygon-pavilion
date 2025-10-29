@@ -190,7 +190,7 @@ class HatBuilder:
         base_points = self._extract_vertices(base_curve)
         center = self._calculate_center(base_points)
 
-        top_points: list[Point3d] = []
+        intersection_lines: list[Line] = []
         debug_rectangles: list[Curve] = []
 
         for i in range(len(base_points)):
@@ -203,15 +203,26 @@ class HatBuilder:
             )
 
             if intersection_line is not None:
-                # Add both endpoints of the intersection line
-                top_points.append(intersection_line.From)
-                top_points.append(intersection_line.To)
+                intersection_lines.append(intersection_line)
 
             if rectangle is not None:
                 debug_rectangles.append(rectangle)
 
-        # Create closed polyline from intersection points
-        if len(top_points) > 0:
+        # Build top curve by finding intersection points between adjacent lines
+        if len(intersection_lines) > 0:
+            top_points: list[Point3d] = []
+
+            for i in range(len(intersection_lines)):
+                current_line = intersection_lines[i]
+                next_line = intersection_lines[(i + 1) % len(intersection_lines)]
+
+                # Find where current line meets the next line
+                intersection_point = self._find_line_intersection_point(
+                    current_line, next_line, offsetted_plane
+                )
+                top_points.append(intersection_point)
+
+            # Create closed polyline
             return PolylineCurve([*top_points, top_points[0]]), debug_rectangles
         else:
             # Fallback: return a small polyline at the plane origin
@@ -226,6 +237,27 @@ class HatBuilder:
             sum(p.Y for p in points) / len(points),
             sum(p.Z for p in points) / len(points),
         )
+
+    def _find_line_intersection_point(
+        self, line1: Line, line2: Line, plane: Plane
+    ) -> Point3d:
+        """
+        Finds the intersection point between two lines on a plane.
+        Projects line1's end point onto line2 to find where they meet.
+        """
+        # Find closest points between the two lines
+        success, t1, _ = Intersection.LineLine(line1, line2, TOLERANCE, True)
+
+        if success:
+            # Lines intersect - return the point on line1
+            return line1.PointAt(t1)
+
+        # Lines don't intersect - project line1's end onto line2
+        line2_param = line2.ClosestParameter(line1.To)
+        projected = line2.PointAt(line2_param)
+
+        # Project back onto the plane to ensure it's on the plane
+        return plane.ClosestPoint(projected)
 
     def _create_and_rotate_rectangle(
         self,
