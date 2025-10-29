@@ -2,7 +2,15 @@ from collections.abc import Sequence
 from importlib import import_module
 from typing import NamedTuple, Optional, Union
 
-from Rhino.Geometry import Brep, Curve, GeometryBase, Plane, Point3d, PolylineCurve
+from Rhino.Geometry import (
+    Brep,
+    Curve,
+    GeometryBase,
+    Plane,
+    Point3d,
+    PolylineCurve,
+    Vector3d,
+)
 from Rhino.Geometry.Intersect import Intersection
 
 TOLERANCE = 0.001
@@ -83,6 +91,9 @@ class PolygonBuilder:
 class HatBuilder:
     """Builder class for creating Hat structures from polyline curves."""
 
+    def __init__(self, original_shape: Brep) -> None:
+        self._original_shape = original_shape
+
     def build(self, curve: PolylineCurve) -> Hat:
         """Builds a Hat from a polyline curve."""
         offsetted_plane = self._build_offsetted_plane(curve)
@@ -96,8 +107,42 @@ class HatBuilder:
         Builds an offsetted plane
         by fitting a plane to the curve's points.
         """
-        points = curve.ToArray()
-        return Plane.FitPlaneToPoints(points)[1]
+        points = list(curve.ToArray())
+        center = Point3d(
+            sum(p.X for p in points) / len(points),
+            sum(p.Y for p in points) / len(points),
+            sum(p.Z for p in points) / len(points),
+        )
+        plane = Plane.FitPlaneToPoints(points)[1]
+        plane.Origin = center
+
+        if self._is_flipped(plane):
+            plane.Flip()
+
+        return plane
+
+    def _is_flipped(self, plane: Plane) -> bool:
+        """
+        Checks if the plane normal is opposite to the original shape's normal.
+        Returns True if the plane should be flipped.
+        """
+        # Find the closest point on the original shape from the plane origin
+        closest_point = self._original_shape.ClosestPoint(plane.Origin)
+
+        # Get the normal at the closest point on the original shape
+        # Find the face that contains the closest point
+        shape_normal = None
+        for face in self._original_shape.Faces:
+            success, u, v = face.ClosestPoint(closest_point)
+            if success:
+                shape_normal = face.NormalAt(u, v)
+                break
+
+        if shape_normal is None:
+            raise ValueError
+
+        # Check if the normals are opposite (dot product < 0)
+        return Vector3d.Multiply(plane.ZAxis, shape_normal) < 0
 
 
 def main():
@@ -123,7 +168,7 @@ def main():
     polygon_builder = PolygonBuilder()
     refined_pieces = [polygon_builder.build(piece) for piece in raw_pieces]
 
-    hat_builder = HatBuilder()
+    hat_builder = HatBuilder(shape)
     hats = [hat_builder.build(piece) for piece in refined_pieces]
 
     return GeometryOutput(
