@@ -9,7 +9,10 @@ TOLERANCE = 0.001
 
 
 class Hat(NamedTuple):
-    """Represents a hat structure with a base curve and an offsetted plane."""
+    """
+    Represents a hat structure
+    with a base curve and an offsetted plane.
+    """
 
     base_curve: PolylineCurve
     offsetted_plane: Plane
@@ -30,7 +33,7 @@ class GeometryOutput(NamedTuple):
 
 
 def populate_geometry(brep: Brep, count: int, seed: int) -> list[Point3d]:
-    """Populate a Brep geometry with random points."""
+    """Populates a Brep geometry with random points."""
     module = import_module("ghpythonlib.components")
     func = getattr(module, "PopulateGeometry")
     result = func(brep, count, seed)
@@ -38,7 +41,7 @@ def populate_geometry(brep: Brep, count: int, seed: int) -> list[Point3d]:
 
 
 def voronoi_3d(points: Sequence[Point3d]) -> list[Brep]:
-    """Generate 3D Voronoi cells from a sequence of points."""
+    """Generates 3D Voronoi cells from a sequence of points."""
     module = import_module("ghpythonlib.components")
     func = getattr(module, "Voronoi3D")
     result = func(points)
@@ -46,7 +49,7 @@ def voronoi_3d(points: Sequence[Point3d]) -> list[Brep]:
 
 
 def join_curves(curves: Sequence[Curve]) -> Curve:
-    """Join multiple curves into a single curve."""
+    """Joins multiple curves into a single curve."""
     joined = list(Curve.JoinCurves(curves, TOLERANCE))
     if len(joined) != 1:
         raise ValueError
@@ -57,18 +60,18 @@ class PolygonBuilder:
     """Builder class for creating polyline curves from curves."""
 
     def build(self, curve: Curve) -> PolylineCurve:
-        """Build a closed polyline curve from a curve."""
+        """Builds a closed polyline curve from a curve."""
         points = self._extract_vertices(curve)
         return self._points_to_closed_polyline_curve(points)
 
     def _points_to_closed_polyline_curve(
         self, points: Sequence[Point3d]
     ) -> PolylineCurve:
-        """Convert a sequence of points to a closed polyline curve."""
+        """Converts a sequence of points to a closed polyline curve."""
         return PolylineCurve([*points, points[0]])
 
     def _extract_vertices(self, curve: Curve) -> list[Point3d]:
-        """Extract vertices from a curve's segments."""
+        """Extracts vertices from a curve's segments."""
         segments = curve.DuplicateSegments()
         points: list[Point3d] = []
         if not curve.IsClosed:
@@ -81,7 +84,7 @@ class HatBuilder:
     """Builder class for creating Hat structures from polyline curves."""
 
     def build(self, curve: PolylineCurve) -> Hat:
-        """Build a Hat from a polyline curve."""
+        """Builds a Hat from a polyline curve."""
         offsetted_plane = self._build_offsetted_plane(curve)
         return Hat(
             base_curve=curve,
@@ -89,13 +92,19 @@ class HatBuilder:
         )
 
     def _build_offsetted_plane(self, curve: PolylineCurve) -> Plane:
-        """Build an offsetted plane by fitting a plane to the curve's points."""
+        """
+        Builds an offsetted plane
+        by fitting a plane to the curve's points.
+        """
         points = curve.ToArray()
         return Plane.FitPlaneToPoints(points)[1]
 
 
 def main():
-    """Main function to generate hat structures from a Brep shape using Voronoi tessellation."""
+    """
+    Main function to generate pavilion
+    from a smooth Brep shape using Voronoi tessellation.
+    """
     shape: Optional[Brep] = globals()["shape"]
     if not isinstance(shape, Brep):
         raise ValueError
