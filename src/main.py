@@ -117,11 +117,7 @@ class HatBuilder:
         by fitting a plane to the curve's points.
         """
         points = list(curve.ToArray())
-        center = Point3d(
-            sum(p.X for p in points) / len(points),
-            sum(p.Y for p in points) / len(points),
-            sum(p.Z for p in points) / len(points),
-        )
+        center = self._calculate_center(points)
         plane = Plane.FitPlaneToPoints(points)[1]
         plane.Origin = center
 
