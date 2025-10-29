@@ -2,10 +2,15 @@ from collections.abc import Sequence
 from importlib import import_module
 from typing import NamedTuple, Optional, Union
 
-from Rhino.Geometry import Brep, Curve, GeometryBase, Point3d, PolylineCurve
+from Rhino.Geometry import Brep, Curve, GeometryBase, Plane, Point3d, PolylineCurve
 from Rhino.Geometry.Intersect import Intersection
 
 TOLERANCE = 0.001
+
+
+class Hat(NamedTuple):
+    base_curve: PolylineCurve
+    offsetted_plane: Plane
 
 
 class GeometryInput(NamedTuple):
@@ -14,7 +19,7 @@ class GeometryInput(NamedTuple):
 
 
 class GeometryOutput(NamedTuple):
-    result: Sequence[Curve]
+    result: Sequence[Hat]
     debug_shapes: Sequence[Sequence[Union[GeometryBase, Point3d]]]
 
 
@@ -58,6 +63,19 @@ class PolygonBuilder:
         return points
 
 
+class HatBuilder:
+    def build(self, curve: PolylineCurve) -> Hat:
+        offsetted_plane = self._build_offsetted_plane(curve)
+        return Hat(
+            base_curve=curve,
+            offsetted_plane=offsetted_plane,
+        )
+
+    def _build_offsetted_plane(self, curve: PolylineCurve) -> Plane:
+        points = curve.ToArray()
+        return Plane.FitPlaneToPoints(points)[1]
+
+
 def main():
     shape: Optional[Brep] = globals()["shape"]
     if not isinstance(shape, Brep):
@@ -77,12 +95,16 @@ def main():
     polygon_builder = PolygonBuilder()
     refined_pieces = [polygon_builder.build(piece) for piece in raw_pieces]
 
+    hat_builder = HatBuilder()
+    hats = [hat_builder.build(piece) for piece in refined_pieces]
+
     return GeometryOutput(
-        result=refined_pieces,
+        result=hats,
         debug_shapes=[
             populated_points,
             voronoi_cells,
             raw_pieces,
+            refined_pieces,
         ],
     )
 
