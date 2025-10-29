@@ -17,7 +17,7 @@ from Rhino.Geometry import (
 from Rhino.Geometry.Intersect import Intersection
 
 TOLERANCE = 0.001
-OFFSET_DISTANCE_FACTOR = 0.15
+OFFSET_DISTANCE_FACTOR = 0.08
 
 
 class Hat(NamedTuple):
