@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from importlib import import_module
 from typing import NamedTuple, Optional, Union
 
@@ -32,7 +32,7 @@ def voronoi_3d(points: Sequence[Point3d]) -> list[Brep]:
     return list(getattr(result, "cells"))
 
 
-def join_curves(curves: Iterable[Curve]) -> Curve:
+def join_curves(curves: Sequence[Curve]) -> Curve:
     joined = list(Curve.JoinCurves(curves, TOLERANCE))
     if len(joined) != 1:
         raise ValueError
@@ -58,7 +58,7 @@ def main():
     populated_points = populate_geometry(shape, piece_count, 1)
     voronoi_cells = voronoi_3d(populated_points)
     raw_pieces = [
-        join_curves(Intersection.BrepBrep(cell, shape, TOLERANCE)[1])
+        join_curves(list(Intersection.BrepBrep(cell, shape, TOLERANCE)[1]))
         for cell in voronoi_cells
     ]
 
