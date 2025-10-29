@@ -111,12 +111,18 @@ class HatBuilder:
             debug_rectangles=debug_rectangles,
         )
 
+    def _extract_vertices(self, curve: PolylineCurve) -> list[Point3d]:
+        """Extracts vertices from a curve's segments."""
+        if not curve.IsClosed:
+            raise ValueError
+        return list(curve.ToArray())[:-1]  # Exclude duplicate closing point
+
     def _build_offsetted_plane(self, curve: PolylineCurve) -> Plane:
         """
         Builds an offsetted plane
         by fitting a plane to the curve's points.
         """
-        points = list(curve.ToArray())
+        points = self._extract_vertices(curve)
         center = self._calculate_center(points)
         plane = Plane.FitPlaneToPoints(points)[1]
         plane.Origin = center
@@ -181,7 +187,7 @@ class HatBuilder:
 
         Returns a tuple of (top_curve, debug_rectangles).
         """
-        base_points = list(base_curve.ToArray())[:-1]  # Exclude duplicate closing point
+        base_points = self._extract_vertices(base_curve)
         center = self._calculate_center(base_points)
 
         top_points: list[Point3d] = []
