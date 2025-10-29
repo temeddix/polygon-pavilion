@@ -119,7 +119,27 @@ class HatBuilder:
         if self._is_flipped(plane):
             plane.Flip()
 
+        # Calculate the diameter of the polyline curve
+        diameter = self._calculate_diameter(points)
+
+        # Offset the plane along its local Z axis by 15% of the diameter
+        offset_distance = diameter * 0.15
+        plane.Origin = plane.Origin + plane.ZAxis * offset_distance
+
         return plane
+
+    def _calculate_diameter(self, points: Sequence[Point3d]) -> float:
+        """
+        Calculates the diameter of the polyline curve
+        as the maximum distance between any two points.
+        """
+        max_distance = 0.0
+        for i, p1 in enumerate(points):
+            for p2 in points[i + 1 :]:
+                distance = p1.DistanceTo(p2)
+                if distance > max_distance:
+                    max_distance = distance
+        return max_distance
 
     def _is_flipped(self, plane: Plane) -> bool:
         """
