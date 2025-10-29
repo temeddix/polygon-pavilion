@@ -14,6 +14,7 @@ from Rhino.Geometry import (
 from Rhino.Geometry.Intersect import Intersection
 
 TOLERANCE = 0.001
+OFFSET_DISTANCE_FACTOR = 0.15
 
 
 class Hat(NamedTuple):
@@ -123,7 +124,7 @@ class HatBuilder:
         diameter = self._calculate_diameter(points)
 
         # Offset the plane along its local Z axis by 15% of the diameter
-        offset_distance = diameter * 0.15
+        offset_distance = diameter * OFFSET_DISTANCE_FACTOR
         plane.Origin = plane.Origin + plane.ZAxis * offset_distance
 
         return plane
