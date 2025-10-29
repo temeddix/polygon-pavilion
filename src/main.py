@@ -38,7 +38,7 @@ class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
     result: Sequence[Hat]
-    debug_shapes: Sequence[Sequence[Union[GeometryBase, Point3d]]]
+    debug_shapes: Sequence[Sequence[Union[GeometryBase, Point3d, Plane]]]
 
 
 def populate_geometry(brep: Brep, count: int, seed: int) -> list[Point3d]:
@@ -192,13 +192,18 @@ def main():
     hat_builder = HatBuilder(shape)
     hats = [hat_builder.build(piece) for piece in refined_pieces]
 
+    hat_previews: list[Union[PolylineCurve, Plane]] = []
+    for hat in hats:
+        hat_previews.append(hat.base_curve)
+        hat_previews.append(hat.offsetted_plane)
+
     return GeometryOutput(
         result=hats,
         debug_shapes=[
             populated_points,
             voronoi_cells,
             raw_pieces,
-            refined_pieces,
+            hat_previews,
         ],
     )
 
