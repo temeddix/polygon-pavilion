@@ -23,6 +23,22 @@ TOLERANCE = 0.001
 OFFSET_DISTANCE_FACTOR = 0.08
 
 
+def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
+    """Populates a Brep geometry with random points."""
+    module = import_module("ghpythonlib.components")
+    func = getattr(module, "PopulateGeometry")
+    result = func(brep, piece_count, seed)
+    return list(result)
+
+
+def voronoi_3d(points: Sequence[Point3d]) -> list[Brep]:
+    """Generates 3D Voronoi cells from a sequence of points."""
+    module = import_module("ghpythonlib.components")
+    func = getattr(module, "Voronoi3D")
+    result = func(points)
+    return list(getattr(result, "cells"))
+
+
 class InvalidInputError(Exception):
     """Exception raised for invalid input types."""
 
@@ -93,8 +109,10 @@ class SurfaceSplitter:
 
     def build(self) -> list[Curve]:
         surface = self._smooth_surface
-        self._populated_points = self._populate_geometry(surface)
-        self._voronoi_cells = self._voronoi_3d(self._populated_points)
+        self._populated_points = populate_geometry(
+            surface, self._piece_count, self._seed
+        )
+        self._voronoi_cells = voronoi_3d(self._populated_points)
         raw_pieces = [
             self._join_curves(list(Intersection.BrepBrep(cell, surface, TOLERANCE)[1]))
             for cell in self._voronoi_cells
@@ -107,20 +125,6 @@ class SurfaceSplitter:
         result.extend(self._populated_points)
         result.extend(self._voronoi_cells)
         return result
-
-    def _populate_geometry(self, brep: Brep) -> list[Point3d]:
-        """Populates a Brep geometry with random points."""
-        module = import_module("ghpythonlib.components")
-        func = getattr(module, "PopulateGeometry")
-        result = func(brep, self._piece_count, self._seed)
-        return list(result)
-
-    def _voronoi_3d(self, points: Sequence[Point3d]) -> list[Brep]:
-        """Generates 3D Voronoi cells from a sequence of points."""
-        module = import_module("ghpythonlib.components")
-        func = getattr(module, "Voronoi3D")
-        result = func(points)
-        return list(getattr(result, "cells"))
 
     def _join_curves(self, curves: Sequence[Curve]) -> Curve:
         """Joins multiple curves into a single curve."""
