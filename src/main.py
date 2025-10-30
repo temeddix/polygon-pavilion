@@ -268,13 +268,7 @@ class HatBuilder:
         self, base_curve: PolylineCurve, offsetted_plane: Plane
     ) -> PolylineCurve:
         """
-        Builds the top curve on the offsetted plane by:
-        1. Extruding each boundary segment to the offsetted plane's Z-axis
-        2. Rotating each rectangle 60° toward the center
-        3. Intersecting with the offsetted plane
-        4. Creating a closed polyline from the intersection points
-
-        Returns a tuple of (top_curve, debug_rectangles).
+        Builds the top curve on the offsetted plane.
         """
         base_points = self._extract_vertices(base_curve)
         center = self._calculate_center(base_points)
@@ -284,11 +278,7 @@ class HatBuilder:
         for i in range(len(base_points)):
             p1 = base_points[i]
             p2 = base_points[(i + 1) % len(base_points)]
-
-            # Create a rectangle by extruding the segment to the offsetted plane
-            intersection_line = self._create_and_rotate_rectangle(
-                p1, p2, center, offsetted_plane
-            )
+            intersection_line = self._project_segment(p1, p2, center, offsetted_plane)
             intersection_lines.append(intersection_line)
 
         # Build top curve by finding intersection points between adjacent lines
@@ -339,7 +329,7 @@ class HatBuilder:
         # Project back onto the plane to ensure it's on the plane
         return plane.ClosestPoint(projected)
 
-    def _create_and_rotate_rectangle(
+    def _project_segment(
         self,
         p1: Point3d,
         p2: Point3d,
