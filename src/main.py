@@ -1,7 +1,7 @@
 import math
 from collections.abc import Sequence
 from importlib import import_module
-from typing import NamedTuple, Optional, Union
+from typing import Any, NamedTuple, Optional, TypeVar, Union
 
 from Rhino.Geometry import (
     Brep,
@@ -16,8 +16,29 @@ from Rhino.Geometry import (
 )
 from Rhino.Geometry.Intersect import Intersection
 
+T = TypeVar("T")
+
 TOLERANCE = 0.001
 OFFSET_DISTANCE_FACTOR = 0.08
+
+
+class InvalidInputError(Exception):
+    """Exception raised for invalid input types."""
+
+    def __init__(self, expected_type: type[Any], actual_value: Any) -> None:
+        message = f"Invalid input value: expected {expected_type}, got {actual_value}"
+        super().__init__(message)
+
+
+class UnexpectedShapeError(Exception):
+    """Exception raised for unexpected geometry shapes."""
+
+    def __init__(
+        self,
+        geometry: Sequence[Union[GeometryBase, Plane, Line]],
+    ) -> None:
+        message = f"Unexpected geometry {geometry}"
+        super().__init__(message)
 
 
 class Hat(NamedTuple):
@@ -66,7 +87,7 @@ def join_curves(curves: Sequence[Curve]) -> Curve:
     """Joins multiple curves into a single curve."""
     joined = list(Curve.JoinCurves(curves, TOLERANCE))
     if len(joined) != 1:
-        raise ValueError
+        raise UnexpectedShapeError(curves)
     return joined[0]
 
 
@@ -114,7 +135,7 @@ class HatBuilder:
     def _extract_vertices(self, curve: PolylineCurve) -> list[Point3d]:
         """Extracts vertices from a curve's segments."""
         if not curve.IsClosed:
-            raise ValueError
+            raise UnexpectedShapeError([curve])
         return list(curve.ToArray())[:-1]  # Exclude duplicate closing point
 
     def _build_offsetted_plane(self, curve: PolylineCurve) -> Plane:
@@ -170,7 +191,7 @@ class HatBuilder:
                 break
 
         if shape_normal is None:
-            raise ValueError
+            raise UnexpectedShapeError([plane, self._original_shape])
 
         # Check if the normals are opposite (dot product < 0)
         return Vector3d.Multiply(plane.ZAxis, shape_normal) < 0
@@ -209,26 +230,23 @@ class HatBuilder:
                 debug_rectangles.append(rectangle)
 
         # Build top curve by finding intersection points between adjacent lines
-        if len(intersection_lines) > 0:
-            top_points: list[Point3d] = []
+        if len(intersection_lines) < 3:
+            raise UnexpectedShapeError(intersection_lines)
 
-            for i in range(len(intersection_lines)):
-                current_line = intersection_lines[i]
-                next_line = intersection_lines[(i + 1) % len(intersection_lines)]
+        top_points: list[Point3d] = []
 
-                # Find where current line meets the next line
-                intersection_point = self._find_line_intersection_point(
-                    current_line, next_line, offsetted_plane
-                )
-                top_points.append(intersection_point)
+        for i in range(len(intersection_lines)):
+            current_line = intersection_lines[i]
+            next_line = intersection_lines[(i + 1) % len(intersection_lines)]
 
-            # Create closed polyline
-            return PolylineCurve([*top_points, top_points[0]]), debug_rectangles
-        else:
-            # Fallback: return a small polyline at the plane origin
-            return PolylineCurve(
-                [offsetted_plane.Origin, offsetted_plane.Origin]
-            ), debug_rectangles
+            # Find where current line meets the next line
+            intersection_point = self._find_line_intersection_point(
+                current_line, next_line, offsetted_plane
+            )
+            top_points.append(intersection_point)
+
+        # Create closed polyline
+        return PolylineCurve([*top_points, top_points[0]]), debug_rectangles
 
     def _calculate_center(self, points: Sequence[Point3d]) -> Point3d:
         """Calculates the center point of a sequence of points."""
@@ -352,41 +370,40 @@ class HatBuilder:
         plane_brep = plane_surface_nurbs.ToBrep()
 
         # Intersect the rectangle with the plane
-        if rect_brep and plane_brep:
-            intersection_result = Intersection.BrepBrep(
-                rect_brep, plane_brep, TOLERANCE
-            )
-            intersection_curves = intersection_result[1]
+        intersection_result = Intersection.BrepBrep(rect_brep, plane_brep, TOLERANCE)
+        intersection_curves = intersection_result[1]
 
-            if intersection_curves:
-                # Convert to list to check if there are any curves
-                curve_list = list(intersection_curves)
-                if len(curve_list) > 0:
-                    # Get the first intersection curve
-                    intersection_curve = curve_list[0]
-                    # Convert to line if possible
-                    line_start = intersection_curve.PointAtStart
-                    line_end = intersection_curve.PointAtEnd
-                    return Line(line_start, line_end), rectangle
+        if intersection_curves:
+            # Convert to list to check if there are any curves
+            curve_list = list(intersection_curves)
+            if len(curve_list) > 0:
+                # Get the first intersection curve
+                intersection_curve = curve_list[0]
+                # Convert to line if possible
+                line_start = intersection_curve.PointAtStart
+                line_end = intersection_curve.PointAtEnd
+                return Line(line_start, line_end), rectangle
 
-        # Fallback: project both endpoints onto the plane
-        proj_p1 = offsetted_plane.ClosestPoint(top_p1)
-        proj_p2 = offsetted_plane.ClosestPoint(top_p2)
-        return Line(proj_p1, proj_p2), rectangle
+        raise UnexpectedShapeError([rect_brep, plane_brep])
 
 
-def main():
+def ensure_type(obj: Any, expected_type: type[T]) -> T:
+    """
+    Type checks and guarantees return type as T.
+    Raises error if obj is not of expected_type.
+    """
+    if not isinstance(obj, expected_type):
+        raise InvalidInputError(expected_type, obj)
+    return obj
+
+
+def main(geo_input: GeometryInput) -> GeometryOutput:
     """
     Main function to generate pavilion
     from a smooth Brep shape using Voronoi tessellation.
     """
-    shape: Optional[Brep] = globals()["shape"]
-    if not isinstance(shape, Brep):
-        raise ValueError
-
-    piece_count: Optional[int] = globals()["piece_count"]
-    if not isinstance(piece_count, int):
-        raise ValueError
+    shape = geo_input.shape
+    piece_count = geo_input.piece_count
 
     populated_points = populate_geometry(shape, piece_count, 1)
     voronoi_cells = voronoi_3d(populated_points)
@@ -421,4 +438,8 @@ def main():
 
 
 if __name__ == "__main__":
-    result, debug_shapes = main()
+    geo_input = GeometryInput(
+        shape=ensure_type(globals()["shape"], Brep),
+        piece_count=ensure_type(globals()["piece_count"], int),
+    )
+    result, debug_shapes = main(geo_input)
