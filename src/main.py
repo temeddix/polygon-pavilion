@@ -57,6 +57,7 @@ class GeometryInput(NamedTuple):
 
     smooth_surface: Brep
     piece_count: int
+    seed: int
 
 
 class GeometryOutput(NamedTuple):
@@ -81,15 +82,16 @@ class GeometryBuilder(Protocol):
 class SurfaceSplitter:
     """Builder class for splitting smooth surfaces into pieces."""
 
-    def __init__(self, smooth_surface: Brep, piece_count: int) -> None:
+    def __init__(self, smooth_surface: Brep, piece_count: int, seed: int) -> None:
         self._smooth_surface = smooth_surface
         self._piece_count = piece_count
+        self._seed = seed
         self._populated_points: list[Point3d] = []
         self._voronoi_cells: list[Brep] = []
 
     def build(self) -> list[Curve]:
         surface = self._smooth_surface
-        self._populated_points = self._populate_geometry(surface, 1)
+        self._populated_points = self._populate_geometry(surface)
         self._voronoi_cells = self._voronoi_3d(self._populated_points)
         raw_pieces = [
             self._join_curves(list(Intersection.BrepBrep(cell, surface, TOLERANCE)[1]))
@@ -104,11 +106,11 @@ class SurfaceSplitter:
         result.extend(self._voronoi_cells)
         return result
 
-    def _populate_geometry(self, brep: Brep, seed: int) -> list[Point3d]:
+    def _populate_geometry(self, brep: Brep) -> list[Point3d]:
         """Populates a Brep geometry with random points."""
         module = import_module("ghpythonlib.components")
         func = getattr(module, "PopulateGeometry")
-        result = func(brep, self._piece_count, seed)
+        result = func(brep, self._piece_count, self._seed)
         return list(result)
 
     def _voronoi_3d(self, points: Sequence[Point3d]) -> list[Brep]:
@@ -423,10 +425,9 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     Main function to generate pavilion
     from a smooth Brep shape using Voronoi tessellation.
     """
-    shape = geo_input.smooth_surface
-    piece_count = geo_input.piece_count
+    shape, piece_count, seed = geo_input
 
-    surface_splitter = SurfaceSplitter(shape, piece_count)
+    surface_splitter = SurfaceSplitter(shape, piece_count, seed)
     raw_pieces = surface_splitter.build()
 
     polygon_builder = PolygonBuilder(raw_pieces)
@@ -451,5 +452,6 @@ if __name__ == "__main__":
     geo_input = GeometryInput(
         smooth_surface=ensure_type(globals()["smooth_surface"], Brep),
         piece_count=ensure_type(globals()["piece_count"], int),
+        seed=ensure_type(globals()["seed"], int),
     )
     result, debug_shapes = main(geo_input)
