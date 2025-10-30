@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any, NamedTuple, Protocol, TypeVar, Union
 
 from Rhino.Geometry import (
+    AreaMassProperties,
     Brep,
     Curve,
     GeometryBase,
@@ -299,7 +300,12 @@ class HatBuilder:
             top_points.append(intersection_point)
 
         # Create closed polyline
-        return PolylineCurve([*top_points, top_points[0]])
+        polyline = PolylineCurve([*top_points, top_points[0]])
+
+        # Check for self-intersections and clean them
+        polyline = self._clean_self_intersections(polyline)
+
+        return polyline
 
     def _calculate_center(self, points: Sequence[Point3d]) -> Point3d:
         """Calculates the center point of a sequence of points."""
@@ -308,6 +314,54 @@ class HatBuilder:
             sum(p.Y for p in points) / len(points),
             sum(p.Z for p in points) / len(points),
         )
+
+    def _get_area(self, curve: Curve) -> float:
+        """Calculates the area of a closed curve."""
+        if not curve.IsClosed:
+            raise UnexpectedShapeError([curve])
+
+        area_props = AreaMassProperties.Compute(curve)
+        return area_props.Area
+
+    def _clean_self_intersections(self, polyline: PolylineCurve) -> PolylineCurve:
+        """
+        Detects and removes self-intersections from a polyline curve.
+        Returns the largest piece if self-intersections are found.
+        """
+        # Check for self-intersections
+        intersections = Intersection.CurveSelf(polyline, TOLERANCE)
+
+        # If there are no self-intersections, return the original
+        if intersections.Count == 0:
+            return polyline
+
+        # Split the curve at all self-intersection points
+        t_params: list[float] = []
+        for intersection in intersections:
+            t_params.append(intersection.ParameterA)
+            t_params.append(intersection.ParameterB)
+
+        # Split the curve
+        split_curves = [c for c in polyline.Split(t_params) if c.IsValid]
+
+        # Check if all split curves are closed
+        all_closed = all(c.IsClosed for c in split_curves)
+
+        # If all are closed, return the largest one
+        if all_closed:
+            largest_curve = max(split_curves, key=self._get_area)
+            return PolygonBuilder([largest_curve]).build()[0]
+
+        # Try to join the unclosed curves
+        open_curves = [c for c in split_curves if not c.IsClosed]
+        joined = list(Curve.JoinCurves(open_curves, TOLERANCE))
+
+        # Check if we got a single closed curve
+        if len(joined) == 1 and joined[0].IsClosed:
+            joined_curve = joined[0]
+            return PolygonBuilder([joined_curve]).build()[0]
+
+        raise UnexpectedShapeError(split_curves)
 
     def _find_line_intersection_point(self, line1: Line, line2: Line) -> Point3d:
         """
@@ -438,6 +492,6 @@ if __name__ == "__main__":
         seed=ensure_type(globals()["seed"], int),
     )
     try:
-        result, debug_shapes = main(geo_input)
+        result, intermediates = main(geo_input)
     except Exception as e:
         error = e
