@@ -70,7 +70,7 @@ class GeometryOutput(NamedTuple):
 class GeometryBuilder(Protocol):
     """Protocol for geometry build step worker classes."""
 
-    def build(self, *args: Any, **kwargs: Any) -> Any:
+    def build(self) -> Any:
         """Do the work of this geometry build step."""
         ...
 
@@ -82,12 +82,15 @@ class GeometryBuilder(Protocol):
 class SurfaceSplitter:
     """Builder class for splitting smooth surfaces into pieces."""
 
-    def __init__(self) -> None:
+    def __init__(self, smooth_surface: Brep, piece_count: int) -> None:
+        self._smooth_surface = smooth_surface
+        self._piece_count = piece_count
         self._populated_points: list[Point3d] = []
         self._voronoi_cells: list[Brep] = []
 
-    def build(self, surface: Brep, piece_count: int) -> list[Curve]:
-        self._populated_points = self._populate_geometry(surface, piece_count, 1)
+    def build(self) -> list[Curve]:
+        surface = self._smooth_surface
+        self._populated_points = self._populate_geometry(surface, 1)
         self._voronoi_cells = self._voronoi_3d(self._populated_points)
         raw_pieces = [
             self._join_curves(list(Intersection.BrepBrep(cell, surface, TOLERANCE)[1]))
@@ -102,11 +105,11 @@ class SurfaceSplitter:
         result.extend(self._voronoi_cells)
         return result
 
-    def _populate_geometry(self, brep: Brep, count: int, seed: int) -> list[Point3d]:
+    def _populate_geometry(self, brep: Brep, seed: int) -> list[Point3d]:
         """Populates a Brep geometry with random points."""
         module = import_module("ghpythonlib.components")
         func = getattr(module, "PopulateGeometry")
-        result = func(brep, count, seed)
+        result = func(brep, self._piece_count, seed)
         return list(result)
 
     def _voronoi_3d(self, points: Sequence[Point3d]) -> list[Brep]:
@@ -127,10 +130,15 @@ class SurfaceSplitter:
 class PolygonBuilder:
     """Builder class for creating polyline curves from curves."""
 
-    def __init__(self) -> None:
+    def __init__(self, raw_pieces: Sequence[Curve]) -> None:
+        self._raw_pieces = raw_pieces
         self._refined_pieces: list[PolylineCurve] = []
 
-    def build(self, curve: Curve) -> PolylineCurve:
+    def build(self) -> list[PolylineCurve]:
+        """Builds closed polyline curves from raw curves."""
+        return [self._build_polygon(p) for p in self._raw_pieces]
+
+    def _build_polygon(self, curve: Curve) -> PolylineCurve:
         """Builds a closed polyline curve from a curve."""
         points = self._extract_vertices(curve)
         polyline = self._points_to_closed_polyline_curve(points)
@@ -160,11 +168,18 @@ class PolygonBuilder:
 class HatBuilder:
     """Builder class for creating Hat structures from polyline curves."""
 
-    def __init__(self, original_shape: Brep) -> None:
+    def __init__(
+        self, original_shape: Brep, refined_pieces: Sequence[PolylineCurve]
+    ) -> None:
         self._original_shape = original_shape
+        self._refined_pieces = refined_pieces
         self._hat_previews: list[Union[Curve, Plane]] = []
 
-    def build(self, curve: PolylineCurve) -> Hat:
+    def build(self) -> list[Hat]:
+        """Builds Hats from a sequence of polyline curves."""
+        return [self._build_hat(p) for p in self._refined_pieces]
+
+    def _build_hat(self, curve: PolylineCurve) -> Hat:
         """Builds a Hat from a polyline curve."""
         offsetted_plane = self._build_offsetted_plane(curve)
         top_curve, debug_rectangles = self._build_top_curve(curve, offsetted_plane)
@@ -459,14 +474,14 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     shape = geo_input.smooth_surface
     piece_count = geo_input.piece_count
 
-    surface_splitter = SurfaceSplitter()
-    raw_pieces = surface_splitter.build(shape, piece_count)
+    surface_splitter = SurfaceSplitter(shape, piece_count)
+    raw_pieces = surface_splitter.build()
 
-    polygon_builder = PolygonBuilder()
-    refined_pieces = [polygon_builder.build(piece) for piece in raw_pieces]
+    polygon_builder = PolygonBuilder(raw_pieces)
+    refined_pieces = polygon_builder.build()
 
-    hat_builder = HatBuilder(shape)
-    hats = [hat_builder.build(piece) for piece in refined_pieces]
+    hat_builder = HatBuilder(shape, refined_pieces)
+    hats = hat_builder.build()
 
     geo_builders: Sequence[GeometryBuilder] = [
         surface_splitter,
