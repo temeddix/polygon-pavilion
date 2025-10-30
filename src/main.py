@@ -1,7 +1,7 @@
 import math
 from collections.abc import Sequence
 from importlib import import_module
-from typing import Any, NamedTuple, Optional, TypeVar, Union
+from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
 
 from Rhino.Geometry import (
     Brep,
@@ -56,7 +56,7 @@ class Hat(NamedTuple):
 class GeometryInput(NamedTuple):
     """Input parameters for geometry processing."""
 
-    shape: Brep
+    smooth_surface: Brep
     piece_count: int
 
 
@@ -64,40 +64,82 @@ class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
     result: Sequence[Hat]
-    debug_shapes: Sequence[Sequence[Union[GeometryBase, Point3d, Plane]]]
+    intermediates: Sequence[Sequence[Union[GeometryBase, Point3d, Plane]]]
 
 
-def populate_geometry(brep: Brep, count: int, seed: int) -> list[Point3d]:
-    """Populates a Brep geometry with random points."""
-    module = import_module("ghpythonlib.components")
-    func = getattr(module, "PopulateGeometry")
-    result = func(brep, count, seed)
-    return list(result)
+class GeometryBuilder(Protocol):
+    """Protocol for geometry build step worker classes."""
+
+    def build(self, *args: Any, **kwargs: Any) -> Any:
+        """Do the work of this geometry build step."""
+        ...
+
+    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+        """Get intermediate geometries from this step for debugging."""
+        ...
 
 
-def voronoi_3d(points: Sequence[Point3d]) -> list[Brep]:
-    """Generates 3D Voronoi cells from a sequence of points."""
-    module = import_module("ghpythonlib.components")
-    func = getattr(module, "Voronoi3D")
-    result = func(points)
-    return list(getattr(result, "cells"))
+class SurfaceSplitter:
+    """Builder class for splitting smooth surfaces into pieces."""
 
+    def __init__(self) -> None:
+        self._populated_points: list[Point3d] = []
+        self._voronoi_cells: list[Brep] = []
 
-def join_curves(curves: Sequence[Curve]) -> Curve:
-    """Joins multiple curves into a single curve."""
-    joined = list(Curve.JoinCurves(curves, TOLERANCE))
-    if len(joined) != 1:
-        raise UnexpectedShapeError(curves)
-    return joined[0]
+    def build(self, surface: Brep, piece_count: int) -> list[Curve]:
+        self._populated_points = self._populate_geometry(surface, piece_count, 1)
+        self._voronoi_cells = self._voronoi_3d(self._populated_points)
+        raw_pieces = [
+            self._join_curves(list(Intersection.BrepBrep(cell, surface, TOLERANCE)[1]))
+            for cell in self._voronoi_cells
+        ]
+        return raw_pieces
+
+    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+        """Get intermediate debug geometries from this step."""
+        result: list[Union[GeometryBase, Point3d, Plane]] = []
+        result.extend(self._populated_points)
+        result.extend(self._voronoi_cells)
+        return result
+
+    def _populate_geometry(self, brep: Brep, count: int, seed: int) -> list[Point3d]:
+        """Populates a Brep geometry with random points."""
+        module = import_module("ghpythonlib.components")
+        func = getattr(module, "PopulateGeometry")
+        result = func(brep, count, seed)
+        return list(result)
+
+    def _voronoi_3d(self, points: Sequence[Point3d]) -> list[Brep]:
+        """Generates 3D Voronoi cells from a sequence of points."""
+        module = import_module("ghpythonlib.components")
+        func = getattr(module, "Voronoi3D")
+        result = func(points)
+        return list(getattr(result, "cells"))
+
+    def _join_curves(self, curves: Sequence[Curve]) -> Curve:
+        """Joins multiple curves into a single curve."""
+        joined = list(Curve.JoinCurves(curves, TOLERANCE))
+        if len(joined) != 1:
+            raise UnexpectedShapeError(curves)
+        return joined[0]
 
 
 class PolygonBuilder:
     """Builder class for creating polyline curves from curves."""
 
+    def __init__(self) -> None:
+        self._refined_pieces: list[PolylineCurve] = []
+
     def build(self, curve: Curve) -> PolylineCurve:
         """Builds a closed polyline curve from a curve."""
         points = self._extract_vertices(curve)
-        return self._points_to_closed_polyline_curve(points)
+        polyline = self._points_to_closed_polyline_curve(points)
+        self._refined_pieces.append(polyline)
+        return polyline
+
+    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+        """Get intermediate debug geometries from this step."""
+        return list(self._refined_pieces)
 
     def _points_to_closed_polyline_curve(
         self, points: Sequence[Point3d]
@@ -120,17 +162,29 @@ class HatBuilder:
 
     def __init__(self, original_shape: Brep) -> None:
         self._original_shape = original_shape
+        self._hat_previews: list[Union[Curve, Plane]] = []
 
     def build(self, curve: PolylineCurve) -> Hat:
         """Builds a Hat from a polyline curve."""
         offsetted_plane = self._build_offsetted_plane(curve)
         top_curve, debug_rectangles = self._build_top_curve(curve, offsetted_plane)
+
+        # Store intermediates for debugging
+        self._hat_previews.append(curve)
+        self._hat_previews.append(offsetted_plane)
+        self._hat_previews.extend(debug_rectangles)
+        self._hat_previews.append(top_curve)
+
         return Hat(
             base_curve=curve,
             offsetted_plane=offsetted_plane,
             top_curve=top_curve,
             debug_rectangles=debug_rectangles,
         )
+
+    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+        """Get intermediate debug geometries from this step."""
+        return list(self._hat_previews)
 
     def _extract_vertices(self, curve: PolylineCurve) -> list[Point3d]:
         """Extracts vertices from a curve's segments."""
@@ -402,15 +456,11 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     Main function to generate pavilion
     from a smooth Brep shape using Voronoi tessellation.
     """
-    shape = geo_input.shape
+    shape = geo_input.smooth_surface
     piece_count = geo_input.piece_count
 
-    populated_points = populate_geometry(shape, piece_count, 1)
-    voronoi_cells = voronoi_3d(populated_points)
-    raw_pieces = [
-        join_curves(list(Intersection.BrepBrep(cell, shape, TOLERANCE)[1]))
-        for cell in voronoi_cells
-    ]
+    surface_splitter = SurfaceSplitter()
+    raw_pieces = surface_splitter.build(shape, piece_count)
 
     polygon_builder = PolygonBuilder()
     refined_pieces = [polygon_builder.build(piece) for piece in raw_pieces]
@@ -418,28 +468,21 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     hat_builder = HatBuilder(shape)
     hats = [hat_builder.build(piece) for piece in refined_pieces]
 
-    hat_previews: list[Union[Curve, Plane]] = []
-
-    for hat in hats:
-        hat_previews.append(hat.base_curve)
-        hat_previews.append(hat.offsetted_plane)
-        hat_previews.extend(hat.debug_rectangles)
-        hat_previews.append(hat.top_curve)
+    geo_builders: Sequence[GeometryBuilder] = [
+        surface_splitter,
+        polygon_builder,
+        hat_builder,
+    ]
 
     return GeometryOutput(
         result=hats,
-        debug_shapes=[
-            populated_points,
-            voronoi_cells,
-            raw_pieces,
-            hat_previews,
-        ],
+        intermediates=[b.get_intermediates() for b in geo_builders],
     )
 
 
 if __name__ == "__main__":
     geo_input = GeometryInput(
-        shape=ensure_type(globals()["shape"], Brep),
+        smooth_surface=ensure_type(globals()["smooth_surface"], Brep),
         piece_count=ensure_type(globals()["piece_count"], int),
     )
     result, debug_shapes = main(geo_input)
