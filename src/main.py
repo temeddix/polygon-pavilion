@@ -1,7 +1,7 @@
 import math
 from collections.abc import Sequence
 from importlib import import_module
-from typing import Any, NamedTuple, Protocol, TypeVar, Union
+from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
 
 from Rhino.Geometry import (
     AreaMassProperties,
@@ -62,12 +62,14 @@ class UnexpectedShapeError(Exception):
 class Hat(NamedTuple):
     """
     Represents a hat structure
-    with a base curve, an offsetted plane, and a top curve.
+    with a base curve, an offsetted plane, a top curve, and surfaces.
     """
 
     base_curve: PolylineCurve
     offsetted_plane: Plane
     top_curve: PolylineCurve
+    top_surface: Brep
+    side_surfaces: list[Brep]
 
 
 class GeometryInput(NamedTuple):
@@ -180,7 +182,7 @@ class HatBuilder:
     ) -> None:
         self._original_shape = original_shape
         self._refined_pieces = refined_pieces
-        self._hat_previews: list[Union[Curve, Plane]] = []
+        self._hat_previews: list[Union[Curve, Plane, Brep]] = []
 
     def build(self) -> list[Hat]:
         """Builds Hats from a sequence of polyline curves."""
@@ -191,15 +193,25 @@ class HatBuilder:
         offsetted_plane = self._build_offsetted_plane(curve)
         top_curve = self._build_top_curve(curve, offsetted_plane)
 
+        # Create surfaces
+        top_surface = self._create_surface_from_curve(top_curve)
+        if top_surface is None:
+            raise UnexpectedShapeError([top_curve])
+        side_surfaces = self._create_side_surfaces(curve, top_curve)
+
         # Store intermediates for debugging
         self._hat_previews.append(curve)
         self._hat_previews.append(offsetted_plane)
         self._hat_previews.append(top_curve)
+        self._hat_previews.append(top_surface)
+        self._hat_previews.extend(side_surfaces)
 
         return Hat(
             base_curve=curve,
             offsetted_plane=offsetted_plane,
             top_curve=top_curve,
+            top_surface=top_surface,
+            side_surfaces=side_surfaces,
         )
 
     def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
@@ -366,6 +378,72 @@ class HatBuilder:
             return PolygonBuilder([joined_curve]).build()[0]
 
         raise UnexpectedShapeError(split_curves)
+
+    def _create_surface_from_curve(self, curve: PolylineCurve) -> Optional[Brep]:
+        """Creates a planar surface from a closed curve."""
+        if not curve.IsClosed:
+            raise UnexpectedShapeError([curve])
+
+        # Create a planar Brep from the closed curve
+        breps = list(Brep.CreatePlanarBreps(curve, TOLERANCE) or [])
+
+        if len(breps) == 0:
+            return None
+
+        return breps[0]
+
+    def _create_side_surfaces(
+        self, base_curve: PolylineCurve, top_curve: PolylineCurve
+    ) -> list[Brep]:
+        """
+        Creates side surfaces by connecting base curve segments to top curve vertices.
+        """
+        base_points = self._extract_vertices(base_curve)
+        top_points = self._extract_vertices(top_curve)
+
+        side_surfaces: list[Brep] = []
+
+        for i in range(len(base_points)):
+            # Get segment start and end points
+            base_start = base_points[i]
+            base_end = base_points[(i + 1) % len(base_points)]
+
+            # Find closest top vertices
+            closest_start = self._find_closest_point(base_start, top_points)
+            closest_end = self._find_closest_point(base_end, top_points)
+
+            # Skip if both points map to the same top vertex (would create a triangle)
+            if closest_start.DistanceTo(closest_end) < TOLERANCE:
+                continue
+
+            # Create four-sided polygon
+            quad_points = [base_start, base_end, closest_end, closest_start]
+            quad_curve = PolylineCurve([*quad_points, quad_points[0]])
+
+            # Create surface from the quad
+            side_surface = self._create_surface_from_curve(quad_curve)
+            if side_surface is not None:
+                side_surfaces.append(side_surface)
+
+        return side_surfaces
+
+    def _find_closest_point(
+        self, point: Point3d, candidates: Sequence[Point3d]
+    ) -> Point3d:
+        """Finds the closest point from a list of candidate points."""
+        if len(candidates) == 0:
+            raise ValueError("No candidate points provided")
+
+        closest = candidates[0]
+        min_distance = point.DistanceTo(closest)
+
+        for candidate in candidates[1:]:
+            distance = point.DistanceTo(candidate)
+            if distance < min_distance:
+                min_distance = distance
+                closest = candidate
+
+        return closest
 
     def _find_line_intersection_point(self, line1: Line, line2: Line) -> Point3d:
         """
