@@ -21,6 +21,7 @@ T = TypeVar("T")
 
 TOLERANCE = 0.001
 OFFSET_DISTANCE_FACTOR = 0.08
+COLLAPSE_PRECISION = 2
 
 
 def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
@@ -78,6 +79,7 @@ class GeometryInput(NamedTuple):
     smooth_surface: Brep
     piece_count: int
     seed: int
+    collapse_length: float
 
 
 class GeometryOutput(NamedTuple):
@@ -139,24 +141,102 @@ class SurfaceSplitter:
 class PolygonBuilder:
     """Builder class for creating polyline curves from curves."""
 
-    def __init__(self, raw_pieces: Sequence[Curve]) -> None:
+    def __init__(self, raw_pieces: Sequence[Curve], collapse_length: float) -> None:
         self._raw_pieces = raw_pieces
+        self._collapse_length = collapse_length
         self._refined_pieces: list[PolylineCurve] = []
+        self._vertex_map: dict[tuple[float, float, float], Point3d] = {}
 
     def build(self) -> list[PolylineCurve]:
         """Builds closed polyline curves from raw curves."""
+        # First pass: extract all vertices and build collapse mapping
+        all_points: list[Point3d] = []
+        for piece in self._raw_pieces:
+            points = self._extract_vertices(piece)
+            all_points.extend(points)
+
+        # Build vertex collapse map
+        self._build_vertex_collapse_map(all_points)
+
+        # Second pass: build polygons using the collapsed vertices
         return [self._build_polygon(p) for p in self._raw_pieces]
+
+    def _build_vertex_collapse_map(self, points: Sequence[Point3d]) -> None:
+        """
+        Builds a map from original vertex positions to collapsed positions.
+        Vertices that are close together will map to the same collapsed position.
+        """
+        # Sort points to ensure consistent processing
+        sorted_points = sorted(points, key=lambda p: (p.X, p.Y, p.Z))
+
+        for point in sorted_points:
+            point_key = (
+                round(point.X, COLLAPSE_PRECISION),
+                round(point.Y, COLLAPSE_PRECISION),
+                round(point.Z, COLLAPSE_PRECISION),
+            )
+
+            # Check if this point is close to any already mapped point
+            found_cluster = False
+            for mapped_point in self._vertex_map.values():
+                if point.DistanceTo(mapped_point) < self._collapse_length:
+                    # Use the existing mapped point
+                    self._vertex_map[point_key] = mapped_point
+                    found_cluster = True
+                    break
+
+            if not found_cluster:
+                # This is a new cluster center
+                self._vertex_map[point_key] = point
+
+    def _get_collapsed_point(self, point: Point3d) -> Point3d:
+        """Gets the collapsed version of a point using the vertex map."""
+        point_key = (
+            round(point.X, COLLAPSE_PRECISION),
+            round(point.Y, COLLAPSE_PRECISION),
+            round(point.Z, COLLAPSE_PRECISION),
+        )
+        return self._vertex_map.get(point_key, point)
 
     def _build_polygon(self, curve: Curve) -> PolylineCurve:
         """Builds a closed polyline curve from a curve."""
         points = self._extract_vertices(curve)
-        polyline = self._points_to_closed_polyline_curve(points)
+        collapsed_points = self._collapse_small_segments(points)
+        polyline = self._points_to_closed_polyline_curve(collapsed_points)
         self._refined_pieces.append(polyline)
         return polyline
 
     def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
         """Get intermediate debug geometries from this step."""
         return list(self._refined_pieces)
+
+    def _collapse_small_segments(self, points: Sequence[Point3d]) -> list[Point3d]:
+        """
+        Collapses small segments by using the global vertex collapse map.
+        """
+        if len(points) < 3:
+            return list(points)
+
+        # Apply global vertex collapse mapping
+        collapsed: list[Point3d] = []
+
+        for point in points:
+            mapped_point = self._get_collapsed_point(point)
+
+            # Only add if it's different from the last point
+            if not collapsed or mapped_point.DistanceTo(collapsed[-1]) >= TOLERANCE:
+                collapsed.append(mapped_point)
+
+        # Check if the last point is the same as the first point (closing the loop)
+        if len(collapsed) > 1 and collapsed[-1].DistanceTo(collapsed[0]) < TOLERANCE:
+            collapsed.pop()
+
+        # Need at least 3 points for a polygon
+        if len(collapsed) < 3:
+            # If collapsing would result in too few points, return original
+            return list(points)
+
+        return collapsed
 
     def _points_to_closed_polyline_curve(
         self, points: Sequence[Point3d]
@@ -366,7 +446,7 @@ class HatBuilder:
         # If all are closed, return the largest one
         if all_closed:
             largest_curve = max(split_curves, key=self._get_area)
-            return PolygonBuilder([largest_curve]).build()[0]
+            return PolygonBuilder([largest_curve], 0.0).build()[0]
 
         # Try to join the unclosed curves
         open_curves = [c for c in split_curves if not c.IsClosed]
@@ -375,7 +455,7 @@ class HatBuilder:
         # Check if we got a single closed curve
         if len(joined) == 1 and joined[0].IsClosed:
             joined_curve = joined[0]
-            return PolygonBuilder([joined_curve]).build()[0]
+            return PolygonBuilder([joined_curve], 0.0).build()[0]
 
         raise UnexpectedShapeError(split_curves)
 
@@ -544,12 +624,12 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     Main function to generate pavilion
     from a smooth Brep shape using Voronoi tessellation.
     """
-    shape, piece_count, seed = geo_input
+    shape, piece_count, seed, collapse_length = geo_input
 
     surface_splitter = SurfaceSplitter(shape, piece_count, seed)
     raw_pieces = surface_splitter.build()
 
-    polygon_builder = PolygonBuilder(raw_pieces)
+    polygon_builder = PolygonBuilder(raw_pieces, collapse_length)
     refined_pieces = polygon_builder.build()
 
     hat_builder = HatBuilder(shape, refined_pieces)
@@ -572,6 +652,7 @@ if __name__ == "__main__":
         smooth_surface=ensure_type(globals()["smooth_surface"], Brep),
         piece_count=ensure_type(globals()["piece_count"], int),
         seed=ensure_type(globals()["seed"], int),
+        collapse_length=ensure_type(globals()["collapse_length"], float),
     )
     try:
         result, intermediates = main(geo_input)
