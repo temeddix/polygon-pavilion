@@ -1,7 +1,7 @@
 import math
 from collections.abc import Sequence
 from importlib import import_module
-from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
+from typing import Any, NamedTuple, Protocol, TypeVar, Union
 
 from Rhino.Geometry import (
     Brep,
@@ -50,7 +50,6 @@ class Hat(NamedTuple):
     base_curve: PolylineCurve
     offsetted_plane: Plane
     top_curve: PolylineCurve
-    debug_rectangles: Sequence[Curve]
 
 
 class GeometryInput(NamedTuple):
@@ -182,19 +181,17 @@ class HatBuilder:
     def _build_hat(self, curve: PolylineCurve) -> Hat:
         """Builds a Hat from a polyline curve."""
         offsetted_plane = self._build_offsetted_plane(curve)
-        top_curve, debug_rectangles = self._build_top_curve(curve, offsetted_plane)
+        top_curve = self._build_top_curve(curve, offsetted_plane)
 
         # Store intermediates for debugging
         self._hat_previews.append(curve)
         self._hat_previews.append(offsetted_plane)
-        self._hat_previews.extend(debug_rectangles)
         self._hat_previews.append(top_curve)
 
         return Hat(
             base_curve=curve,
             offsetted_plane=offsetted_plane,
             top_curve=top_curve,
-            debug_rectangles=debug_rectangles,
         )
 
     def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
@@ -267,7 +264,7 @@ class HatBuilder:
 
     def _build_top_curve(
         self, base_curve: PolylineCurve, offsetted_plane: Plane
-    ) -> tuple[PolylineCurve, list[Curve]]:
+    ) -> PolylineCurve:
         """
         Builds the top curve on the offsetted plane by:
         1. Extruding each boundary segment to the offsetted plane's Z-axis
@@ -281,22 +278,16 @@ class HatBuilder:
         center = self._calculate_center(base_points)
 
         intersection_lines: list[Line] = []
-        debug_rectangles: list[Curve] = []
 
         for i in range(len(base_points)):
             p1 = base_points[i]
             p2 = base_points[(i + 1) % len(base_points)]
 
             # Create a rectangle by extruding the segment to the offsetted plane
-            intersection_line, rectangle = self._create_and_rotate_rectangle(
+            intersection_line = self._create_and_rotate_rectangle(
                 p1, p2, center, offsetted_plane
             )
-
-            if intersection_line is not None:
-                intersection_lines.append(intersection_line)
-
-            if rectangle is not None:
-                debug_rectangles.append(rectangle)
+            intersection_lines.append(intersection_line)
 
         # Build top curve by finding intersection points between adjacent lines
         if len(intersection_lines) < 3:
@@ -315,7 +306,7 @@ class HatBuilder:
             top_points.append(intersection_point)
 
         # Create closed polyline
-        return PolylineCurve([*top_points, top_points[0]]), debug_rectangles
+        return PolylineCurve([*top_points, top_points[0]])
 
     def _calculate_center(self, points: Sequence[Point3d]) -> Point3d:
         """Calculates the center point of a sequence of points."""
@@ -352,15 +343,11 @@ class HatBuilder:
         p2: Point3d,
         center: Point3d,
         offsetted_plane: Plane,
-    ) -> tuple[Optional[Line], Optional[PolylineCurve]]:
+    ) -> Line:
         """
-        Creates a rectangle from a segment, rotates it toward center,
-        and returns the intersection line with the offsetted plane.
-
-        Returns a tuple of (intersection_line, rectangle_curve).
+        Projects segment endpoints along a 60-degree rotated direction
+        to find their intersection with the offsetted plane.
         """
-        from Rhino.Geometry import NurbsSurface
-
         # Calculate segment midpoint
         segment_mid = Point3d((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2, (p1.Z + p2.Z) / 2)
 
@@ -385,75 +372,40 @@ class HatBuilder:
         # Create rotation transform around the segment
         rotation_transform = Transform.Rotation(angle, rotation_axis, segment_mid)
 
-        # Calculate the vector pointing from segment to offsetted plane
-        # We'll use the plane's Z-axis direction
-        plane_normal = offsetted_plane.ZAxis
+        # Start with the plane's normal direction
+        plane_normal = Vector3d(offsetted_plane.ZAxis)
+        plane_normal.Unitize()
 
-        # Calculate a point on the offsetted plane above the segment
-        # Project the plane origin direction from segment midpoint
-        to_plane = offsetted_plane.Origin - segment_mid
-        distance_to_plane = Vector3d.Multiply(to_plane, plane_normal)
+        # Apply rotation to get the projection direction
+        projection_direction = Vector3d(plane_normal)
+        projection_direction.Transform(rotation_transform)
 
-        # Create top edge of rectangle (before rotation)
-        # The rectangle extends from the segment upward to the plane
-        height = abs(distance_to_plane) / math.cos(math.radians(60))  # Adjust for angle
+        # Project p1 and p2 to the offsetted plane along the rotated direction
+        top_p1 = self._project_point_to_plane(p1, projection_direction, offsetted_plane)
+        top_p2 = self._project_point_to_plane(p2, projection_direction, offsetted_plane)
 
-        # Create two points above the segment endpoints
-        up_vector = Vector3d(plane_normal)
-        up_vector.Unitize()
-        top_p1_orig = p1 + up_vector * height
-        top_p2_orig = p2 + up_vector * height
+        # Create the intersection line
+        intersection_line = Line(top_p1, top_p2)
 
-        # Apply rotation to the top edge
-        top_p1 = Point3d(top_p1_orig)
-        top_p2 = Point3d(top_p2_orig)
-        top_p1.Transform(rotation_transform)
-        top_p2.Transform(rotation_transform)
+        return intersection_line
 
-        # Create the rectangle surface
-        rect_surface = NurbsSurface.CreateFromCorners(p1, p2, top_p2, top_p1)
+    def _project_point_to_plane(
+        self, point: Point3d, direction: Vector3d, plane: Plane
+    ) -> Point3d:
+        """
+        Projects a point along a direction vector to intersect with a plane.
+        """
+        # Create a ray from the point in the given direction
+        ray = Line(point, direction)
 
-        # Create the rectangle polyline for debugging
-        rectangle = PolylineCurve([p1, p2, top_p2, top_p1, p1])
+        # Find intersection parameter with the plane
+        success, t = Intersection.LinePlane(ray, plane)
 
-        # Convert rectangle surface to Brep for intersection
-        rect_brep = rect_surface.ToBrep()
+        if not success:
+            raise UnexpectedShapeError([ray, plane])
 
-        # Create a large plane surface for intersection
-        plane_size = 10000.0
-        plane_corners = [
-            offsetted_plane.Origin
-            + offsetted_plane.XAxis * plane_size
-            + offsetted_plane.YAxis * plane_size,
-            offsetted_plane.Origin
-            - offsetted_plane.XAxis * plane_size
-            + offsetted_plane.YAxis * plane_size,
-            offsetted_plane.Origin
-            - offsetted_plane.XAxis * plane_size
-            - offsetted_plane.YAxis * plane_size,
-            offsetted_plane.Origin
-            + offsetted_plane.XAxis * plane_size
-            - offsetted_plane.YAxis * plane_size,
-        ]
-        plane_surface_nurbs = NurbsSurface.CreateFromCorners(*plane_corners)
-        plane_brep = plane_surface_nurbs.ToBrep()
-
-        # Intersect the rectangle with the plane
-        intersection_result = Intersection.BrepBrep(rect_brep, plane_brep, TOLERANCE)
-        intersection_curves = intersection_result[1]
-
-        if intersection_curves:
-            # Convert to list to check if there are any curves
-            curve_list = list(intersection_curves)
-            if len(curve_list) > 0:
-                # Get the first intersection curve
-                intersection_curve = curve_list[0]
-                # Convert to line if possible
-                line_start = intersection_curve.PointAtStart
-                line_end = intersection_curve.PointAtEnd
-                return Line(line_start, line_end), rectangle
-
-        raise UnexpectedShapeError([rect_brep, plane_brep])
+        # Return the point at the intersection
+        return ray.PointAt(t)
 
 
 def ensure_type(obj: Any, expected_type: type[T]) -> T:
