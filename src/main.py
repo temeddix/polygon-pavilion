@@ -37,6 +37,7 @@ class UnexpectedShapeError(Exception):
         self,
         geometry: Sequence[Union[GeometryBase, Plane, Line]],
     ) -> None:
+        self.preview = geometry
         message = f"Unexpected geometry {geometry}"
         super().__init__(message)
 
@@ -273,27 +274,27 @@ class HatBuilder:
         base_points = self._extract_vertices(base_curve)
         center = self._calculate_center(base_points)
 
-        intersection_lines: list[Line] = []
+        projected_lines: list[Line] = []
 
         for i in range(len(base_points)):
             p1 = base_points[i]
             p2 = base_points[(i + 1) % len(base_points)]
             intersection_line = self._project_segment(p1, p2, center, offsetted_plane)
-            intersection_lines.append(intersection_line)
+            projected_lines.append(intersection_line)
 
         # Build top curve by finding intersection points between adjacent lines
-        if len(intersection_lines) < 3:
-            raise UnexpectedShapeError(intersection_lines)
+        if len(projected_lines) < 3:
+            raise UnexpectedShapeError(projected_lines)
 
         top_points: list[Point3d] = []
 
-        for i in range(len(intersection_lines)):
-            current_line = intersection_lines[i]
-            next_line = intersection_lines[(i + 1) % len(intersection_lines)]
+        for i in range(len(projected_lines)):
+            current_line = projected_lines[i]
+            next_line = projected_lines[(i + 1) % len(projected_lines)]
 
             # Find where current line meets the next line
             intersection_point = self._find_line_intersection_point(
-                current_line, next_line, offsetted_plane
+                current_line, next_line
             )
             top_points.append(intersection_point)
 
@@ -308,26 +309,18 @@ class HatBuilder:
             sum(p.Z for p in points) / len(points),
         )
 
-    def _find_line_intersection_point(
-        self, line1: Line, line2: Line, plane: Plane
-    ) -> Point3d:
+    def _find_line_intersection_point(self, line1: Line, line2: Line) -> Point3d:
         """
         Finds the intersection point between two lines on a plane.
-        Projects line1's end point onto line2 to find where they meet.
+        Projects line1's starting point along line1's direction onto an infinite line2.
         """
-        # Find closest points between the two lines
-        success, t1, _ = Intersection.LineLine(line1, line2, TOLERANCE, True)
+        # Treat line2 as infinite by using LineLine without bounded constraint
+        success, t1, _ = Intersection.LineLine(line1, line2, TOLERANCE, False)
 
-        if success:
-            # Lines intersect - return the point on line1
-            return line1.PointAt(t1)
+        if not success:
+            raise UnexpectedShapeError([line1, line2])
 
-        # Lines don't intersect - project line1's end onto line2
-        line2_param = line2.ClosestParameter(line1.To)
-        projected = line2.PointAt(line2_param)
-
-        # Project back onto the plane to ensure it's on the plane
-        return plane.ClosestPoint(projected)
+        return line1.PointAt(t1)
 
     def _project_segment(
         self,
@@ -444,4 +437,7 @@ if __name__ == "__main__":
         piece_count=ensure_type(globals()["piece_count"], int),
         seed=ensure_type(globals()["seed"], int),
     )
-    result, debug_shapes = main(geo_input)
+    try:
+        result, debug_shapes = main(geo_input)
+    except Exception as e:
+        error = e
