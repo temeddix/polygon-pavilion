@@ -22,6 +22,7 @@ T = TypeVar("T")
 TOLERANCE = 0.001
 OFFSET_DISTANCE_FACTOR = 0.08
 COLLAPSE_PRECISION = 2
+HAT_SIDE_ANGLE = math.pi / 6
 
 
 def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
@@ -60,17 +61,27 @@ class UnexpectedShapeError(Exception):
         super().__init__(message)
 
 
+class HatSide(NamedTuple):
+    """
+    Represents a side of a hat structure
+    defined by its base edge and top edge.
+    """
+
+    top_edge: Line
+    bottom_edge: Line
+    surface: Brep
+
+
 class Hat(NamedTuple):
     """
     Represents a hat structure
-    with a base curve, an offsetted plane, a top curve, and surfaces.
+    with a base curve, an top plane, a top curve, and surfaces.
     """
 
     base_curve: PolylineCurve
-    offsetted_plane: Plane
-    top_curve: PolylineCurve
-    top_surface: Brep
-    side_surfaces: list[Brep]
+    top_plane: Plane
+    top: Brep
+    sides: Sequence[HatSide]
 
 
 class GeometryInput(NamedTuple):
@@ -85,7 +96,7 @@ class GeometryInput(NamedTuple):
 class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
-    result: Sequence[Hat]
+    result: Sequence[Brep]
     intermediates: Sequence[Sequence[Union[GeometryBase, Point3d, Plane]]]
 
 
@@ -270,28 +281,27 @@ class HatBuilder:
 
     def _build_hat(self, curve: PolylineCurve) -> Hat:
         """Builds a Hat from a polyline curve."""
-        offsetted_plane = self._build_offsetted_plane(curve)
-        top_curve = self._build_top_curve(curve, offsetted_plane)
+        top_plane = self._build_top_plane(curve)
+        top_curve = self._build_top_curve(curve, top_plane)
 
         # Create surfaces
         top_surface = self._create_surface_from_curve(top_curve)
         if top_surface is None:
             raise UnexpectedShapeError([top_curve])
-        side_surfaces = self._create_side_surfaces(curve, top_curve)
+        side_surfaces = self._create_hat_sides(curve, top_curve)
 
         # Store intermediates for debugging
         self._hat_previews.append(curve)
-        self._hat_previews.append(offsetted_plane)
+        self._hat_previews.append(top_plane)
         self._hat_previews.append(top_curve)
         self._hat_previews.append(top_surface)
-        self._hat_previews.extend(side_surfaces)
+        self._hat_previews.extend(s.surface for s in side_surfaces)
 
         return Hat(
             base_curve=curve,
-            offsetted_plane=offsetted_plane,
-            top_curve=top_curve,
-            top_surface=top_surface,
-            side_surfaces=side_surfaces,
+            top_plane=top_plane,
+            top=top_surface,
+            sides=side_surfaces,
         )
 
     def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
@@ -304,9 +314,9 @@ class HatBuilder:
             raise UnexpectedShapeError([curve])
         return list(curve.ToArray())[:-1]  # Exclude duplicate closing point
 
-    def _build_offsetted_plane(self, curve: PolylineCurve) -> Plane:
+    def _build_top_plane(self, curve: PolylineCurve) -> Plane:
         """
-        Builds an offsetted plane
+        Builds an top plane
         by fitting a plane to the curve's points.
         """
         points = self._extract_vertices(curve)
@@ -363,10 +373,10 @@ class HatBuilder:
         return Vector3d.Multiply(plane.ZAxis, shape_normal) < 0
 
     def _build_top_curve(
-        self, base_curve: PolylineCurve, offsetted_plane: Plane
+        self, base_curve: PolylineCurve, top_plane: Plane
     ) -> PolylineCurve:
         """
-        Builds the top curve on the offsetted plane.
+        Builds the top curve on the top plane.
         """
         base_points = self._extract_vertices(base_curve)
         center = self._calculate_center(base_points)
@@ -376,7 +386,7 @@ class HatBuilder:
         for i in range(len(base_points)):
             p1 = base_points[i]
             p2 = base_points[(i + 1) % len(base_points)]
-            intersection_line = self._project_segment(p1, p2, center, offsetted_plane)
+            intersection_line = self._project_segment(p1, p2, center, top_plane)
             projected_lines.append(intersection_line)
 
         # Build top curve by finding intersection points between adjacent lines
@@ -472,58 +482,93 @@ class HatBuilder:
 
         return breps[0]
 
-    def _create_side_surfaces(
+    def _create_hat_sides(
         self, base_curve: PolylineCurve, top_curve: PolylineCurve
-    ) -> list[Brep]:
+    ) -> list[HatSide]:
         """
-        Creates side surfaces by connecting base curve segments to top curve vertices.
+        Creates side surfaces by connecting base curve segments to top curve segments.
         """
         base_points = self._extract_vertices(base_curve)
         top_points = self._extract_vertices(top_curve)
 
-        side_surfaces: list[Brep] = []
+        side_surfaces: list[HatSide] = []
 
         for i in range(len(base_points)):
-            # Get segment start and end points
+            # Get base segment
             base_start = base_points[i]
             base_end = base_points[(i + 1) % len(base_points)]
 
-            # Find closest top vertices
-            closest_start = self._find_closest_point(base_start, top_points)
-            closest_end = self._find_closest_point(base_end, top_points)
+            # Find the two closest consecutive points on the top curve
+            # This ensures we create a proper quad that connects to the top surface edge
+            closest_indices = self._find_two_closest_consecutive_points(
+                base_start, base_end, top_points
+            )
 
-            # Skip if both points map to the same top vertex (would create a triangle)
-            if closest_start.DistanceTo(closest_end) < TOLERANCE:
+            if closest_indices is None:
                 continue
 
-            # Create four-sided polygon
-            quad_points = [base_start, base_end, closest_end, closest_start]
+            idx1, idx2 = closest_indices
+            top_start = top_points[idx1]
+            top_end = top_points[idx2]
+
+            # Create edges
+            bottom_edge = Line(base_start, base_end)
+            top_edge = Line(top_start, top_end)
+
+            # Create four-sided polygon connecting base segment to top segment
+            # Order: base_start -> base_end -> top_end -> top_start
+            quad_points = [base_start, base_end, top_end, top_start]
             quad_curve = PolylineCurve([*quad_points, quad_points[0]])
 
             # Create surface from the quad
             side_surface = self._create_surface_from_curve(quad_curve)
             if side_surface is not None:
-                side_surfaces.append(side_surface)
+                hat_side = HatSide(
+                    top_edge=top_edge,
+                    bottom_edge=bottom_edge,
+                    surface=side_surface,
+                )
+                side_surfaces.append(hat_side)
 
         return side_surfaces
 
-    def _find_closest_point(
-        self, point: Point3d, candidates: Sequence[Point3d]
-    ) -> Point3d:
-        """Finds the closest point from a list of candidate points."""
-        if len(candidates) == 0:
-            raise ValueError("No candidate points provided")
+    def _find_two_closest_consecutive_points(
+        self, base_start: Point3d, base_end: Point3d, top_points: Sequence[Point3d]
+    ) -> Optional[tuple[int, int]]:
+        """
+        Finds two consecutive points on the top curve
+        that are closest to the base segment.
+        Returns indices of the two consecutive points, or None if not found.
+        """
+        if len(top_points) < 2:
+            return None
 
-        closest = candidates[0]
-        min_distance = point.DistanceTo(closest)
+        # Calculate the midpoint of the base segment
+        base_mid = Point3d(
+            (base_start.X + base_end.X) / 2,
+            (base_start.Y + base_end.Y) / 2,
+            (base_start.Z + base_end.Z) / 2,
+        )
 
-        for candidate in candidates[1:]:
-            distance = point.DistanceTo(candidate)
+        # Find the edge on the top curve closest to the base midpoint
+        min_distance = float("inf")
+        best_idx = 0
+
+        for i in range(len(top_points)):
+            p1 = top_points[i]
+            p2 = top_points[(i + 1) % len(top_points)]
+
+            # Calculate midpoint of this top edge
+            edge_mid = Point3d((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2, (p1.Z + p2.Z) / 2)
+
+            # Distance from base midpoint to this edge midpoint
+            distance = base_mid.DistanceTo(edge_mid)
+
             if distance < min_distance:
                 min_distance = distance
-                closest = candidate
+                best_idx = i
 
-        return closest
+        return (best_idx, (best_idx + 1) % len(top_points))
 
     def _find_line_intersection_point(self, line1: Line, line2: Line) -> Point3d:
         """
@@ -543,11 +588,11 @@ class HatBuilder:
         p1: Point3d,
         p2: Point3d,
         center: Point3d,
-        offsetted_plane: Plane,
+        top_plane: Plane,
     ) -> Line:
         """
         Projects segment endpoints along a 60-degree rotated direction
-        to find their intersection with the offsetted plane.
+        to find their intersection with the top plane.
         """
         # Calculate segment midpoint
         segment_mid = Point3d((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2, (p1.Z + p2.Z) / 2)
@@ -561,29 +606,28 @@ class HatBuilder:
 
         # Determine rotation direction by checking cross product with plane normal
         cross = Vector3d.CrossProduct(rotation_axis, segment_to_center)
-        dot_with_normal = Vector3d.Multiply(cross, offsetted_plane.ZAxis)
+        dot_with_normal = Vector3d.Multiply(cross, top_plane.ZAxis)
 
         # Rotate 60 degrees (to get 30 degree angle with plane)
         # Flip the angle sign to rotate inward instead of outward
-        if dot_with_normal < 0:
-            angle = math.radians(60)
-        else:
-            angle = -math.radians(60)
+        angle = math.pi / 2 - HAT_SIDE_ANGLE
+        if dot_with_normal > 0:
+            angle = -angle
 
         # Create rotation transform around the segment
         rotation_transform = Transform.Rotation(angle, rotation_axis, segment_mid)
 
         # Start with the plane's normal direction
-        plane_normal = Vector3d(offsetted_plane.ZAxis)
+        plane_normal = Vector3d(top_plane.ZAxis)
         plane_normal.Unitize()
 
         # Apply rotation to get the projection direction
         projection_direction = Vector3d(plane_normal)
         projection_direction.Transform(rotation_transform)
 
-        # Project p1 and p2 to the offsetted plane along the rotated direction
-        top_p1 = self._project_point_to_plane(p1, projection_direction, offsetted_plane)
-        top_p2 = self._project_point_to_plane(p2, projection_direction, offsetted_plane)
+        # Project p1 and p2 to the top plane along the rotated direction
+        top_p1 = self._project_point_to_plane(p1, projection_direction, top_plane)
+        top_p2 = self._project_point_to_plane(p2, projection_direction, top_plane)
 
         # Create the intersection line
         intersection_line = Line(top_p1, top_p2)
@@ -607,6 +651,132 @@ class HatBuilder:
 
         # Return the point at the intersection
         return ray.PointAt(t)
+
+
+class HatUnroller:
+    """Builder class for unrolling Hat structures into flat 2D patterns."""
+
+    def __init__(self, hats: Sequence[Hat]) -> None:
+        self._hats = hats
+        self._unrolled_hats: list[Brep] = []
+
+    def build(self) -> list[Brep]:
+        """Builds unrolled flat patterns from Hat structures."""
+        return [self._unroll_hat(hat) for hat in self._hats]
+
+    def _unroll_hat(self, hat: Hat) -> Brep:
+        """
+        Unrolls a single Hat into a flat 2D pattern using geometric properties.
+        The top face is placed on the world XY plane, and side faces are rotated
+        30 degrees outward around their shared edges with the top.
+        """
+        # Transform to align top to world plane
+        xform_to_world = self._prepare_top_transform(hat)
+
+        # Transform and collect top surface
+        unrolled_top = hat.top.DuplicateBrep()
+        unrolled_top.Transform(xform_to_world)
+
+        # Transform the top plane's Z axis to determine rotation direction
+        top_normal = Vector3d(hat.top_plane.ZAxis)
+        top_normal.Transform(xform_to_world)
+
+        # Unfold all side surfaces using their stored top_edge information
+        unfolded_sides = self._unfold_all_sides(hat.sides, xform_to_world)
+
+        # Join everything together
+        unrolled = self._join_unfolded_surfaces(unrolled_top, unfolded_sides)
+        self._unrolled_hats.append(unrolled)
+
+        return unrolled
+
+    def _prepare_top_transform(self, hat: Hat) -> Transform:
+        """
+        Prepares the transformation to move the top surface to the world XY plane.
+        """
+        # Get plane from the top surface
+        top_plane = hat.top_plane
+
+        # Create transform to align top surface to world XY plane
+        world_plane = Plane.WorldXY
+        world_plane.Origin = Point3d(0, 0, 0)
+
+        return Transform.PlaneToPlane(top_plane, world_plane)
+
+    def _unfold_all_sides(
+        self,
+        hat_sides: Sequence[HatSide],
+        xform_to_world: Transform,
+    ) -> list[Brep]:
+        """Unfolds all side surfaces by rotating them around their shared edges."""
+        unfolded_sides: list[Brep] = []
+
+        for hat_side in hat_sides:
+            unfolded = self._unfold_single_side(hat_side, xform_to_world)
+            if unfolded is not None:
+                unfolded_sides.append(unfolded)
+
+        return unfolded_sides
+
+    def _unfold_single_side(
+        self,
+        hat_side: HatSide,
+        xform_to_world: Transform,
+    ) -> Optional[Brep]:
+        """Unfolds a single side surface around its shared edge with the top."""
+        # Get the top edge (hinge) - already stored in HatSide
+        hinge_line = Line(hat_side.top_edge.From, hat_side.top_edge.To)
+
+        # Transform the hinge to world coordinates
+        hinge_start = Point3d(hinge_line.From)
+        hinge_end = Point3d(hinge_line.To)
+        hinge_start.Transform(xform_to_world)
+        hinge_end.Transform(xform_to_world)
+
+        # Calculate rotation transform using the top normal
+        rotation_xform = self._calculate_side_rotation(hinge_start, hinge_end)
+
+        # Apply transforms: first to world plane, then rotate
+        unfolded_side = hat_side.surface.DuplicateBrep()
+        unfolded_side.Transform(xform_to_world)
+        unfolded_side.Transform(rotation_xform)
+
+        return unfolded_side
+
+    def _calculate_side_rotation(
+        self,
+        hinge_start: Point3d,
+        hinge_end: Point3d,
+    ) -> Transform:
+        """
+        Calculates the rotation transform for unfolding a side surface.
+        Rotates 30 degrees around the shared edge (hinge).
+        Uses the top plane's normal to determine rotation direction.
+        """
+        # Calculate rotation axis (along the shared edge)
+        hinge_vector = Vector3d(hinge_end - hinge_start)
+        hinge_vector.Unitize()
+
+        # Create rotation transform around the hinge edge
+        return Transform.Rotation(HAT_SIDE_ANGLE, hinge_vector, hinge_start)
+
+    def _join_unfolded_surfaces(
+        self, unrolled_top: Brep, unfolded_sides: Sequence[Brep]
+    ) -> Brep:
+        """Joins the top and all side surfaces into a single polysurface."""
+        all_unfolded: list[Brep] = [unrolled_top]
+        all_unfolded.extend(unfolded_sides)
+
+        joined = list(Brep.JoinBreps(all_unfolded, TOLERANCE))
+
+        if len(joined) == 0:
+            raise UnexpectedShapeError(all_unfolded)
+
+        return joined[0]
+
+    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+        """Get intermediate debug geometries from this step."""
+        return list(self._unrolled_hats)
 
 
 def ensure_type(obj: Any, expected_type: type[T]) -> T:
@@ -635,14 +805,18 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     hat_builder = HatBuilder(shape, refined_pieces)
     hats = hat_builder.build()
 
+    hat_unroller = HatUnroller(hats)
+    unrolled_hats = hat_unroller.build()
+
     geo_builders: Sequence[GeometryBuilder] = [
         surface_splitter,
         polygon_builder,
         hat_builder,
+        hat_unroller,
     ]
 
     return GeometryOutput(
-        result=hats,
+        result=unrolled_hats,
         intermediates=[b.get_intermediates() for b in geo_builders],
     )
 
