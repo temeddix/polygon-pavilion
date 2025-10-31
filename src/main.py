@@ -702,13 +702,15 @@ class HatBuilder:
 class HatUnroller:
     """Builder class for unrolling Hat structures into flat 2D patterns."""
 
-    def __init__(self, hats: Sequence[Hat]) -> None:
+    def __init__(self, hats: Sequence[Hat], original_shape: Brep) -> None:
+        self._original_shape = original_shape
         self._hats = hats
         self._unrolled_hats: list[Brep] = []
 
     def build(self) -> list[Brep]:
         """Builds unrolled flat patterns from Hat structures."""
-        return [self._unroll_hat(hat) for hat in self._hats]
+        unrolled = [self._unroll_hat(hat) for hat in self._hats]
+        return self._arrange_in_grid(unrolled)
 
     def _unroll_hat(self, hat: Hat) -> Brep:
         """
@@ -820,6 +822,58 @@ class HatUnroller:
 
         return joined[0]
 
+    def _arrange_in_grid(self, breps: list[Brep]) -> list[Brep]:
+        """
+        Arranges the unrolled Breps in a grid layout with spacing based on
+        the largest bounding box dimensions, positioned next to the original shape.
+        """
+        if not breps:
+            return breps
+
+        # Get original shape bounding box
+        original_bbox = self._original_shape.GetBoundingBox(True)
+        original_max_x = original_bbox.Max.X
+        original_min_y = original_bbox.Min.Y
+
+        # Analyze all bounding boxes to find max width and height
+        max_width = 0.0
+        max_height = 0.0
+
+        for brep in breps:
+            bbox = brep.GetBoundingBox(True)
+            width = bbox.Max.X - bbox.Min.X
+            height = bbox.Max.Y - bbox.Min.Y
+            max_width = max(max_width, width)
+            max_height = max(max_height, height)
+
+        # Calculate grid dimensions (roughly square grid)
+        grid_cols = math.ceil(math.sqrt(len(breps)))
+
+        # Start grid offset from the original shape's boundaries with some spacing
+        grid_start_x = original_max_x + max_width * 1.0
+        grid_start_y = original_min_y
+
+        # Arrange breps in grid
+        arranged_breps: list[Brep] = []
+
+        for i, brep in enumerate(breps):
+            row = i // grid_cols
+            col = i % grid_cols
+
+            # Calculate translation
+            x_offset = grid_start_x + col * max_width * 1.2  # 20% spacing
+            y_offset = grid_start_y + row * max_height * 1.2  # 20% spacing
+
+            # Create translation transform
+            translation = Transform.Translation(x_offset, y_offset, 0)
+
+            # Apply translation
+            arranged_brep = brep.DuplicateBrep()
+            arranged_brep.Transform(translation)
+            arranged_breps.append(arranged_brep)
+
+        return arranged_breps
+
     def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
         """Get intermediate debug geometries from this step."""
         return list(self._unrolled_hats)
@@ -852,7 +906,7 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     hat_builder = HatBuilder(shape, refined_pieces)
     hats = hat_builder.build()
 
-    hat_unroller = HatUnroller(hats)
+    hat_unroller = HatUnroller(hats, shape)
     unrolled_hats = hat_unroller.build()
 
     geo_builders: Sequence[GeometryBuilder] = [
