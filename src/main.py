@@ -649,10 +649,10 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
 
 if __name__ == "__main__":
     geo_input = GeometryInput(
-        smooth_surface=ensure_type(globals()["smooth_surface"], Brep),
-        piece_count=ensure_type(globals()["piece_count"], int),
-        seed=ensure_type(globals()["seed"], int),
-        collapse_length=ensure_type(globals()["collapse_length"], float),
+        smooth_surface=ensure_type(globals().pop("smooth_surface"), Brep),
+        piece_count=ensure_type(globals().pop("piece_count"), int),
+        seed=ensure_type(globals().pop("seed"), int),
+        collapse_length=ensure_type(globals().pop("collapse_length"), float),
     )
     try:
         result, intermediates = main(geo_input)
