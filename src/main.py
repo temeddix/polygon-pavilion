@@ -12,6 +12,7 @@ from Rhino.Geometry import (
     Plane,
     Point3d,
     PolylineCurve,
+    TextDot,
     Transform,
     Vector3d,
 )
@@ -98,6 +99,7 @@ class GeometryOutput(NamedTuple):
 
     result: Sequence[Brep]
     intermediates: Sequence[Sequence[Union[GeometryBase, Point3d, Plane]]]
+    labels: Sequence[TextDot]
 
 
 class GeometryBuilder(Protocol):
@@ -706,6 +708,7 @@ class HatUnroller:
         self._original_shape = original_shape
         self._hats = hats
         self._unrolled_hats: list[Brep] = []
+        self._text_dots: list[TextDot] = []
 
     def build(self) -> list[Brep]:
         """Builds unrolled flat patterns from Hat structures."""
@@ -826,6 +829,7 @@ class HatUnroller:
         """
         Arranges the unrolled Breps in a grid layout with spacing based on
         the largest bounding box dimensions, positioned next to the original shape.
+        Also creates TextDots for labeling original and unrolled pieces.
         """
         if not breps:
             return breps
@@ -853,7 +857,7 @@ class HatUnroller:
         grid_start_x = original_max_x + max_width * 1.0
         grid_start_y = original_min_y
 
-        # Arrange breps in grid
+        # Arrange breps in grid and create labels
         arranged_breps: list[Brep] = []
 
         for i, brep in enumerate(breps):
@@ -872,11 +876,34 @@ class HatUnroller:
             arranged_brep.Transform(translation)
             arranged_breps.append(arranged_brep)
 
+            # Create TextDots for original and unrolled pieces
+            label = str(i + 1)  # 1-based numbering
+
+            # TextDot for original Hat piece (at its centroid)
+            original_hat = self._hats[i]
+            original_centroid = self._get_brep_centroid(original_hat.top)
+            original_dot = TextDot(label, original_centroid)
+            self._text_dots.append(original_dot)
+
+            # TextDot for unrolled piece (at its centroid)
+            unrolled_centroid = self._get_brep_centroid(arranged_brep)
+            unrolled_dot = TextDot(label, unrolled_centroid)
+            self._text_dots.append(unrolled_dot)
+
         return arranged_breps
+
+    def _get_brep_centroid(self, brep: Brep) -> Point3d:
+        """Calculates the centroid of a Brep using area mass properties."""
+        props = AreaMassProperties.Compute(brep)
+        return props.Centroid
 
     def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
         """Get intermediate debug geometries from this step."""
         return list(self._unrolled_hats)
+
+    def get_text_dots(self) -> list[TextDot]:
+        """Get TextDot labels for original and unrolled pieces."""
+        return list(self._text_dots)
 
 
 def extract_input(name: str, expected_type: type[T]) -> T:
@@ -919,6 +946,7 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     return GeometryOutput(
         result=unrolled_hats,
         intermediates=[b.get_intermediates() for b in geo_builders],
+        labels=hat_unroller.get_text_dots(),
     )
 
 
@@ -930,6 +958,6 @@ if __name__ == "__main__":
         collapse_length=extract_input("collapse_length", float),
     )
     try:
-        result, intermediates = main(geo_input)
+        result, intermediates, labels = main(geo_input)
     except Exception as e:
         error = e
