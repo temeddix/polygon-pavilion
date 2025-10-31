@@ -825,11 +825,12 @@ class HatUnroller:
         return list(self._unrolled_hats)
 
 
-def ensure_type(obj: Any, expected_type: type[T]) -> T:
+def extract_input(name: str, expected_type: type[T]) -> T:
     """
-    Type checks and guarantees return type as T.
-    Raises error if obj is not of expected_type.
+    Extracts and validates an input value from globals.
+    The input value is removed from globals after extraction.
     """
+    obj = globals().pop(name)
     if not isinstance(obj, expected_type):
         raise InvalidInputError(expected_type, obj)
     return obj
@@ -869,10 +870,10 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
 
 if __name__ == "__main__":
     geo_input = GeometryInput(
-        smooth_surface=ensure_type(globals().pop("smooth_surface"), Brep),
-        piece_count=ensure_type(globals().pop("piece_count"), int),
-        seed=ensure_type(globals().pop("seed"), int),
-        collapse_length=ensure_type(globals().pop("collapse_length"), float),
+        smooth_surface=extract_input("smooth_surface", Brep),
+        piece_count=extract_input("piece_count", int),
+        seed=extract_input("seed", int),
+        collapse_length=extract_input("collapse_length", float),
     )
     try:
         result, intermediates = main(geo_input)
