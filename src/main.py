@@ -282,6 +282,7 @@ class HatBuilder:
     def _build_hat(self, curve: PolylineCurve) -> Hat:
         """Builds a Hat from a polyline curve."""
         top_plane = self._build_top_plane(curve)
+        curve = self._orient_curve(curve, top_plane.ZAxis)
         top_curve = self._build_top_curve(curve, top_plane)
 
         # Create surfaces
@@ -335,6 +336,51 @@ class HatBuilder:
         plane.Origin = plane.Origin + plane.ZAxis * offset_distance
 
         return plane
+
+    def _orient_curve(
+        self, curve: PolylineCurve, plane_normal: Vector3d
+    ) -> PolylineCurve:
+        """
+        Orients the curve to be clockwise
+        when viewed from the plane normal direction.
+        If the curve is clockwise, it reverses the point order.
+        """
+        points = self._extract_vertices(curve)
+
+        if len(points) < 3:
+            return curve
+
+        # Calculate the signed area using the plane normal
+        # Positive area means clockwise, negative means clockwise
+        signed_area = 0.0
+
+        for i in range(len(points)):
+            p1 = points[i]
+            p2 = points[(i + 1) % len(points)]
+
+            # Create edge vector
+            edge = Vector3d(p2 - p1)
+
+            # Vector from origin to midpoint of edge
+            mid = Point3d(
+                (p1.X + p2.X) / 2,
+                (p1.Y + p2.Y) / 2,
+                (p1.Z + p2.Z) / 2,
+            )
+            to_mid = Vector3d(mid)
+
+            # Cross product gives area contribution
+            cross = Vector3d.CrossProduct(to_mid, edge)
+
+            # Dot with plane normal gives signed contribution
+            signed_area += Vector3d.Multiply(cross, plane_normal)
+
+        # If signed area is negative, curve is clockwise - reverse it
+        if signed_area > 0:
+            reversed_points = list(reversed(points))
+            return PolylineCurve([*reversed_points, reversed_points[0]])
+
+        return curve
 
     def _calculate_diameter(self, points: Sequence[Point3d]) -> float:
         """
