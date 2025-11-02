@@ -1,5 +1,4 @@
 import math
-from collections.abc import Sequence
 from importlib import import_module
 from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
 
@@ -34,7 +33,7 @@ def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
     return list(result)
 
 
-def voronoi_3d(points: Sequence[Point3d]) -> list[Brep]:
+def voronoi_3d(points: list[Point3d]) -> list[Brep]:
     """Generates 3D Voronoi cells from a sequence of points."""
     module = import_module("ghpythonlib.components")
     func = getattr(module, "Voronoi3D")
@@ -55,7 +54,7 @@ class UnexpectedShapeError(Exception):
 
     def __init__(
         self,
-        geometry: Sequence[Union[GeometryBase, Plane, Line]],
+        geometry: list[Any],
     ) -> None:
         self.preview = geometry
         message = f"Unexpected geometry {geometry}"
@@ -82,7 +81,7 @@ class Hat(NamedTuple):
     base_curve: PolylineCurve
     top_plane: Plane
     top: Brep
-    sides: Sequence[HatSide]
+    sides: list[HatSide]
 
 
 class GeometryInput(NamedTuple):
@@ -97,9 +96,9 @@ class GeometryInput(NamedTuple):
 class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
-    result: Sequence[Brep]
-    intermediates: Sequence[Sequence[Union[GeometryBase, Point3d, Plane]]]
-    labels: Sequence[TextDot]
+    result: list[Brep]
+    intermediates: list[list[Union[GeometryBase, Point3d, Plane]]]
+    labels: list[TextDot]
 
 
 class GeometryBuilder(Protocol):
@@ -143,7 +142,7 @@ class SurfaceSplitter:
         result.extend(self._voronoi_cells)
         return result
 
-    def _join_curves(self, curves: Sequence[Curve]) -> Curve:
+    def _join_curves(self, curves: list[Curve]) -> Curve:
         """Joins multiple curves into a single curve."""
         joined = list(Curve.JoinCurves(curves, TOLERANCE))
         if len(joined) != 1:
@@ -154,7 +153,7 @@ class SurfaceSplitter:
 class PolygonBuilder:
     """Builder class for creating polyline curves from curves."""
 
-    def __init__(self, raw_pieces: Sequence[Curve], collapse_length: float) -> None:
+    def __init__(self, raw_pieces: list[Curve], collapse_length: float) -> None:
         self._raw_pieces = raw_pieces
         self._collapse_length = collapse_length
         self._refined_pieces: list[PolylineCurve] = []
@@ -174,7 +173,7 @@ class PolygonBuilder:
         # Second pass: build polygons using the collapsed vertices
         return [self._build_polygon(p) for p in self._raw_pieces]
 
-    def _build_vertex_collapse_map(self, points: Sequence[Point3d]) -> None:
+    def _build_vertex_collapse_map(self, points: list[Point3d]) -> None:
         """
         Builds a map from original vertex positions to collapsed positions.
         Vertices that are close together will map to the same collapsed position.
@@ -223,7 +222,7 @@ class PolygonBuilder:
         """Get intermediate debug geometries from this step."""
         return list(self._refined_pieces)
 
-    def _collapse_small_segments(self, points: Sequence[Point3d]) -> list[Point3d]:
+    def _collapse_small_segments(self, points: list[Point3d]) -> list[Point3d]:
         """
         Collapses small segments by using the global vertex collapse map.
         """
@@ -251,9 +250,7 @@ class PolygonBuilder:
 
         return collapsed
 
-    def _points_to_closed_polyline_curve(
-        self, points: Sequence[Point3d]
-    ) -> PolylineCurve:
+    def _points_to_closed_polyline_curve(self, points: list[Point3d]) -> PolylineCurve:
         """Converts a sequence of points to a closed polyline curve."""
         return PolylineCurve([*points, points[0]])
 
@@ -271,7 +268,7 @@ class HatBuilder:
     """Builder class for creating Hat structures from polyline curves."""
 
     def __init__(
-        self, original_shape: Brep, refined_pieces: Sequence[PolylineCurve]
+        self, original_shape: Brep, refined_pieces: list[PolylineCurve]
     ) -> None:
         self._original_shape = original_shape
         self._refined_pieces = refined_pieces
@@ -384,7 +381,7 @@ class HatBuilder:
 
         return curve
 
-    def _calculate_diameter(self, points: Sequence[Point3d]) -> float:
+    def _calculate_diameter(self, points: list[Point3d]) -> float:
         """
         Calculates the diameter of the polyline curve
         as the maximum distance between any two points.
@@ -461,7 +458,7 @@ class HatBuilder:
 
         return polyline
 
-    def _calculate_center(self, points: Sequence[Point3d]) -> Point3d:
+    def _calculate_center(self, points: list[Point3d]) -> Point3d:
         """Calculates the center point of a sequence of points."""
         return Point3d(
             sum(p.X for p in points) / len(points),
@@ -581,7 +578,7 @@ class HatBuilder:
         return side_surfaces
 
     def _find_two_closest_consecutive_points(
-        self, base_start: Point3d, base_end: Point3d, top_points: Sequence[Point3d]
+        self, base_start: Point3d, base_end: Point3d, top_points: list[Point3d]
     ) -> Optional[tuple[int, int]]:
         """
         Finds two consecutive points on the top curve
@@ -704,7 +701,7 @@ class HatBuilder:
 class HatUnroller:
     """Builder class for unrolling Hat structures into flat 2D patterns."""
 
-    def __init__(self, hats: Sequence[Hat], original_shape: Brep) -> None:
+    def __init__(self, hats: list[Hat], original_shape: Brep) -> None:
         self._original_shape = original_shape
         self._hats = hats
         self._unrolled_hats: list[Brep] = []
@@ -756,7 +753,7 @@ class HatUnroller:
 
     def _unfold_all_sides(
         self,
-        hat_sides: Sequence[HatSide],
+        hat_sides: list[HatSide],
         xform_to_world: Transform,
     ) -> list[Brep]:
         """Unfolds all side surfaces by rotating them around their shared edges."""
@@ -812,7 +809,7 @@ class HatUnroller:
         return Transform.Rotation(HAT_SIDE_ANGLE, hinge_vector, hinge_start)
 
     def _join_unfolded_surfaces(
-        self, unrolled_top: Brep, unfolded_sides: Sequence[Brep]
+        self, unrolled_top: Brep, unfolded_sides: list[Brep]
     ) -> Brep:
         """Joins the top and all side surfaces into a single polysurface."""
         all_unfolded: list[Brep] = [unrolled_top]
@@ -936,7 +933,7 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     hat_unroller = HatUnroller(hats, shape)
     unrolled_hats = hat_unroller.build()
 
-    geo_builders: Sequence[GeometryBuilder] = [
+    geo_builders: list[GeometryBuilder] = [
         surface_splitter,
         polygon_builder,
         hat_builder,
