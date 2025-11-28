@@ -6,7 +6,6 @@ dependencies = ["rhino-stubs-typed~=8.20.25157"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
-reportUnnecessaryTypeIgnoreComment = true
 extraPaths = ["src"]
 
 [tool.ruff.lint]

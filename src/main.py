@@ -1,5 +1,4 @@
 import math
-from collections.abc import Sequence
 from importlib import import_module
 from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
 
@@ -12,6 +11,7 @@ from Rhino.Geometry import (
     Plane,
     Point3d,
     PolylineCurve,
+    TextDot,
     Transform,
     Vector3d,
 )
@@ -22,6 +22,7 @@ T = TypeVar("T")
 TOLERANCE = 0.001
 OFFSET_DISTANCE_FACTOR = 0.08
 COLLAPSE_PRECISION = 2
+HAT_SIDE_ANGLE = math.pi / 6
 
 
 def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
@@ -32,7 +33,7 @@ def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
     return list(result)
 
 
-def voronoi_3d(points: Sequence[Point3d]) -> list[Brep]:
+def voronoi_3d(points: list[Point3d]) -> list[Brep]:
     """Generates 3D Voronoi cells from a sequence of points."""
     module = import_module("ghpythonlib.components")
     func = getattr(module, "Voronoi3D")
@@ -53,24 +54,34 @@ class UnexpectedShapeError(Exception):
 
     def __init__(
         self,
-        geometry: Sequence[Union[GeometryBase, Plane, Line]],
+        geometry: list[Any],
     ) -> None:
         self.preview = geometry
         message = f"Unexpected geometry {geometry}"
         super().__init__(message)
 
 
+class HatSide(NamedTuple):
+    """
+    Represents a side of a hat structure
+    defined by its base edge and top edge.
+    """
+
+    top_edge: Line
+    bottom_edge: Line
+    surface: Brep
+
+
 class Hat(NamedTuple):
     """
     Represents a hat structure
-    with a base curve, an offsetted plane, a top curve, and surfaces.
+    with a base curve, an top plane, a top curve, and surfaces.
     """
 
     base_curve: PolylineCurve
-    offsetted_plane: Plane
-    top_curve: PolylineCurve
-    top_surface: Brep
-    side_surfaces: list[Brep]
+    top_plane: Plane
+    top: Brep
+    sides: list[HatSide]
 
 
 class GeometryInput(NamedTuple):
@@ -85,8 +96,9 @@ class GeometryInput(NamedTuple):
 class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
-    result: Sequence[Hat]
-    intermediates: Sequence[Sequence[Union[GeometryBase, Point3d, Plane]]]
+    result: list[Brep]
+    intermediates: list[list[Union[GeometryBase, Point3d, Plane]]]
+    labels: list[TextDot]
 
 
 class GeometryBuilder(Protocol):
@@ -130,7 +142,7 @@ class SurfaceSplitter:
         result.extend(self._voronoi_cells)
         return result
 
-    def _join_curves(self, curves: Sequence[Curve]) -> Curve:
+    def _join_curves(self, curves: list[Curve]) -> Curve:
         """Joins multiple curves into a single curve."""
         joined = list(Curve.JoinCurves(curves, TOLERANCE))
         if len(joined) != 1:
@@ -141,7 +153,7 @@ class SurfaceSplitter:
 class PolygonBuilder:
     """Builder class for creating polyline curves from curves."""
 
-    def __init__(self, raw_pieces: Sequence[Curve], collapse_length: float) -> None:
+    def __init__(self, raw_pieces: list[Curve], collapse_length: float) -> None:
         self._raw_pieces = raw_pieces
         self._collapse_length = collapse_length
         self._refined_pieces: list[PolylineCurve] = []
@@ -161,7 +173,7 @@ class PolygonBuilder:
         # Second pass: build polygons using the collapsed vertices
         return [self._build_polygon(p) for p in self._raw_pieces]
 
-    def _build_vertex_collapse_map(self, points: Sequence[Point3d]) -> None:
+    def _build_vertex_collapse_map(self, points: list[Point3d]) -> None:
         """
         Builds a map from original vertex positions to collapsed positions.
         Vertices that are close together will map to the same collapsed position.
@@ -210,7 +222,7 @@ class PolygonBuilder:
         """Get intermediate debug geometries from this step."""
         return list(self._refined_pieces)
 
-    def _collapse_small_segments(self, points: Sequence[Point3d]) -> list[Point3d]:
+    def _collapse_small_segments(self, points: list[Point3d]) -> list[Point3d]:
         """
         Collapses small segments by using the global vertex collapse map.
         """
@@ -238,9 +250,7 @@ class PolygonBuilder:
 
         return collapsed
 
-    def _points_to_closed_polyline_curve(
-        self, points: Sequence[Point3d]
-    ) -> PolylineCurve:
+    def _points_to_closed_polyline_curve(self, points: list[Point3d]) -> PolylineCurve:
         """Converts a sequence of points to a closed polyline curve."""
         return PolylineCurve([*points, points[0]])
 
@@ -258,7 +268,7 @@ class HatBuilder:
     """Builder class for creating Hat structures from polyline curves."""
 
     def __init__(
-        self, original_shape: Brep, refined_pieces: Sequence[PolylineCurve]
+        self, original_shape: Brep, refined_pieces: list[PolylineCurve]
     ) -> None:
         self._original_shape = original_shape
         self._refined_pieces = refined_pieces
@@ -270,28 +280,28 @@ class HatBuilder:
 
     def _build_hat(self, curve: PolylineCurve) -> Hat:
         """Builds a Hat from a polyline curve."""
-        offsetted_plane = self._build_offsetted_plane(curve)
-        top_curve = self._build_top_curve(curve, offsetted_plane)
+        top_plane = self._build_top_plane(curve)
+        curve = self._orient_curve(curve, top_plane.ZAxis)
+        top_curve = self._build_top_curve(curve, top_plane)
 
         # Create surfaces
         top_surface = self._create_surface_from_curve(top_curve)
         if top_surface is None:
             raise UnexpectedShapeError([top_curve])
-        side_surfaces = self._create_side_surfaces(curve, top_curve)
+        side_surfaces = self._create_hat_sides(curve, top_curve)
 
         # Store intermediates for debugging
         self._hat_previews.append(curve)
-        self._hat_previews.append(offsetted_plane)
+        self._hat_previews.append(top_plane)
         self._hat_previews.append(top_curve)
         self._hat_previews.append(top_surface)
-        self._hat_previews.extend(side_surfaces)
+        self._hat_previews.extend(s.surface for s in side_surfaces)
 
         return Hat(
             base_curve=curve,
-            offsetted_plane=offsetted_plane,
-            top_curve=top_curve,
-            top_surface=top_surface,
-            side_surfaces=side_surfaces,
+            top_plane=top_plane,
+            top=top_surface,
+            sides=side_surfaces,
         )
 
     def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
@@ -304,9 +314,9 @@ class HatBuilder:
             raise UnexpectedShapeError([curve])
         return list(curve.ToArray())[:-1]  # Exclude duplicate closing point
 
-    def _build_offsetted_plane(self, curve: PolylineCurve) -> Plane:
+    def _build_top_plane(self, curve: PolylineCurve) -> Plane:
         """
-        Builds an offsetted plane
+        Builds an top plane
         by fitting a plane to the curve's points.
         """
         points = self._extract_vertices(curve)
@@ -326,7 +336,52 @@ class HatBuilder:
 
         return plane
 
-    def _calculate_diameter(self, points: Sequence[Point3d]) -> float:
+    def _orient_curve(
+        self, curve: PolylineCurve, plane_normal: Vector3d
+    ) -> PolylineCurve:
+        """
+        Orients the curve to be clockwise
+        when viewed from the plane normal direction.
+        If the curve is clockwise, it reverses the point order.
+        """
+        points = self._extract_vertices(curve)
+
+        if len(points) < 3:
+            return curve
+
+        # Calculate the signed area using the plane normal
+        # Positive area means clockwise, negative means clockwise
+        signed_area = 0.0
+
+        for i in range(len(points)):
+            p1 = points[i]
+            p2 = points[(i + 1) % len(points)]
+
+            # Create edge vector
+            edge = Vector3d(p2 - p1)
+
+            # Vector from origin to midpoint of edge
+            mid = Point3d(
+                (p1.X + p2.X) / 2,
+                (p1.Y + p2.Y) / 2,
+                (p1.Z + p2.Z) / 2,
+            )
+            to_mid = Vector3d(mid)
+
+            # Cross product gives area contribution
+            cross = Vector3d.CrossProduct(to_mid, edge)
+
+            # Dot with plane normal gives signed contribution
+            signed_area += Vector3d.Multiply(cross, plane_normal)
+
+        # If signed area is negative, curve is clockwise - reverse it
+        if signed_area > 0:
+            reversed_points = list(reversed(points))
+            return PolylineCurve([*reversed_points, reversed_points[0]])
+
+        return curve
+
+    def _calculate_diameter(self, points: list[Point3d]) -> float:
         """
         Calculates the diameter of the polyline curve
         as the maximum distance between any two points.
@@ -363,10 +418,10 @@ class HatBuilder:
         return Vector3d.Multiply(plane.ZAxis, shape_normal) < 0
 
     def _build_top_curve(
-        self, base_curve: PolylineCurve, offsetted_plane: Plane
+        self, base_curve: PolylineCurve, top_plane: Plane
     ) -> PolylineCurve:
         """
-        Builds the top curve on the offsetted plane.
+        Builds the top curve on the top plane.
         """
         base_points = self._extract_vertices(base_curve)
         center = self._calculate_center(base_points)
@@ -376,7 +431,7 @@ class HatBuilder:
         for i in range(len(base_points)):
             p1 = base_points[i]
             p2 = base_points[(i + 1) % len(base_points)]
-            intersection_line = self._project_segment(p1, p2, center, offsetted_plane)
+            intersection_line = self._project_segment(p1, p2, center, top_plane)
             projected_lines.append(intersection_line)
 
         # Build top curve by finding intersection points between adjacent lines
@@ -403,7 +458,7 @@ class HatBuilder:
 
         return polyline
 
-    def _calculate_center(self, points: Sequence[Point3d]) -> Point3d:
+    def _calculate_center(self, points: list[Point3d]) -> Point3d:
         """Calculates the center point of a sequence of points."""
         return Point3d(
             sum(p.X for p in points) / len(points),
@@ -472,58 +527,93 @@ class HatBuilder:
 
         return breps[0]
 
-    def _create_side_surfaces(
+    def _create_hat_sides(
         self, base_curve: PolylineCurve, top_curve: PolylineCurve
-    ) -> list[Brep]:
+    ) -> list[HatSide]:
         """
-        Creates side surfaces by connecting base curve segments to top curve vertices.
+        Creates side surfaces by connecting base curve segments to top curve segments.
         """
         base_points = self._extract_vertices(base_curve)
         top_points = self._extract_vertices(top_curve)
 
-        side_surfaces: list[Brep] = []
+        side_surfaces: list[HatSide] = []
 
         for i in range(len(base_points)):
-            # Get segment start and end points
+            # Get base segment
             base_start = base_points[i]
             base_end = base_points[(i + 1) % len(base_points)]
 
-            # Find closest top vertices
-            closest_start = self._find_closest_point(base_start, top_points)
-            closest_end = self._find_closest_point(base_end, top_points)
+            # Find the two closest consecutive points on the top curve
+            # This ensures we create a proper quad that connects to the top surface edge
+            closest_indices = self._find_two_closest_consecutive_points(
+                base_start, base_end, top_points
+            )
 
-            # Skip if both points map to the same top vertex (would create a triangle)
-            if closest_start.DistanceTo(closest_end) < TOLERANCE:
+            if closest_indices is None:
                 continue
 
-            # Create four-sided polygon
-            quad_points = [base_start, base_end, closest_end, closest_start]
+            idx1, idx2 = closest_indices
+            top_start = top_points[idx1]
+            top_end = top_points[idx2]
+
+            # Create edges
+            bottom_edge = Line(base_start, base_end)
+            top_edge = Line(top_start, top_end)
+
+            # Create four-sided polygon connecting base segment to top segment
+            # Order: base_start -> base_end -> top_end -> top_start
+            quad_points = [base_start, base_end, top_end, top_start]
             quad_curve = PolylineCurve([*quad_points, quad_points[0]])
 
             # Create surface from the quad
             side_surface = self._create_surface_from_curve(quad_curve)
             if side_surface is not None:
-                side_surfaces.append(side_surface)
+                hat_side = HatSide(
+                    top_edge=top_edge,
+                    bottom_edge=bottom_edge,
+                    surface=side_surface,
+                )
+                side_surfaces.append(hat_side)
 
         return side_surfaces
 
-    def _find_closest_point(
-        self, point: Point3d, candidates: Sequence[Point3d]
-    ) -> Point3d:
-        """Finds the closest point from a list of candidate points."""
-        if len(candidates) == 0:
-            raise ValueError("No candidate points provided")
+    def _find_two_closest_consecutive_points(
+        self, base_start: Point3d, base_end: Point3d, top_points: list[Point3d]
+    ) -> Optional[tuple[int, int]]:
+        """
+        Finds two consecutive points on the top curve
+        that are closest to the base segment.
+        Returns indices of the two consecutive points, or None if not found.
+        """
+        if len(top_points) < 2:
+            return None
 
-        closest = candidates[0]
-        min_distance = point.DistanceTo(closest)
+        # Calculate the midpoint of the base segment
+        base_mid = Point3d(
+            (base_start.X + base_end.X) / 2,
+            (base_start.Y + base_end.Y) / 2,
+            (base_start.Z + base_end.Z) / 2,
+        )
 
-        for candidate in candidates[1:]:
-            distance = point.DistanceTo(candidate)
+        # Find the edge on the top curve closest to the base midpoint
+        min_distance = float("inf")
+        best_idx = 0
+
+        for i in range(len(top_points)):
+            p1 = top_points[i]
+            p2 = top_points[(i + 1) % len(top_points)]
+
+            # Calculate midpoint of this top edge
+            edge_mid = Point3d((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2, (p1.Z + p2.Z) / 2)
+
+            # Distance from base midpoint to this edge midpoint
+            distance = base_mid.DistanceTo(edge_mid)
+
             if distance < min_distance:
                 min_distance = distance
-                closest = candidate
+                best_idx = i
 
-        return closest
+        return (best_idx, (best_idx + 1) % len(top_points))
 
     def _find_line_intersection_point(self, line1: Line, line2: Line) -> Point3d:
         """
@@ -543,11 +633,11 @@ class HatBuilder:
         p1: Point3d,
         p2: Point3d,
         center: Point3d,
-        offsetted_plane: Plane,
+        top_plane: Plane,
     ) -> Line:
         """
         Projects segment endpoints along a 60-degree rotated direction
-        to find their intersection with the offsetted plane.
+        to find their intersection with the top plane.
         """
         # Calculate segment midpoint
         segment_mid = Point3d((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2, (p1.Z + p2.Z) / 2)
@@ -561,29 +651,28 @@ class HatBuilder:
 
         # Determine rotation direction by checking cross product with plane normal
         cross = Vector3d.CrossProduct(rotation_axis, segment_to_center)
-        dot_with_normal = Vector3d.Multiply(cross, offsetted_plane.ZAxis)
+        dot_with_normal = Vector3d.Multiply(cross, top_plane.ZAxis)
 
         # Rotate 60 degrees (to get 30 degree angle with plane)
         # Flip the angle sign to rotate inward instead of outward
-        if dot_with_normal < 0:
-            angle = math.radians(60)
-        else:
-            angle = -math.radians(60)
+        angle = math.pi / 2 - HAT_SIDE_ANGLE
+        if dot_with_normal > 0:
+            angle = -angle
 
         # Create rotation transform around the segment
         rotation_transform = Transform.Rotation(angle, rotation_axis, segment_mid)
 
         # Start with the plane's normal direction
-        plane_normal = Vector3d(offsetted_plane.ZAxis)
+        plane_normal = Vector3d(top_plane.ZAxis)
         plane_normal.Unitize()
 
         # Apply rotation to get the projection direction
         projection_direction = Vector3d(plane_normal)
         projection_direction.Transform(rotation_transform)
 
-        # Project p1 and p2 to the offsetted plane along the rotated direction
-        top_p1 = self._project_point_to_plane(p1, projection_direction, offsetted_plane)
-        top_p2 = self._project_point_to_plane(p2, projection_direction, offsetted_plane)
+        # Project p1 and p2 to the top plane along the rotated direction
+        top_p1 = self._project_point_to_plane(p1, projection_direction, top_plane)
+        top_p2 = self._project_point_to_plane(p2, projection_direction, top_plane)
 
         # Create the intersection line
         intersection_line = Line(top_p1, top_p2)
@@ -609,11 +698,217 @@ class HatBuilder:
         return ray.PointAt(t)
 
 
-def ensure_type(obj: Any, expected_type: type[T]) -> T:
+class HatUnroller:
+    """Builder class for unrolling Hat structures into flat 2D patterns."""
+
+    def __init__(self, hats: list[Hat], original_shape: Brep) -> None:
+        self._original_shape = original_shape
+        self._hats = hats
+        self._unrolled_hats: list[Brep] = []
+        self._text_dots: list[TextDot] = []
+
+    def build(self) -> list[Brep]:
+        """Builds unrolled flat patterns from Hat structures."""
+        unrolled = [self._unroll_hat(hat) for hat in self._hats]
+        return self._arrange_in_grid(unrolled)
+
+    def _unroll_hat(self, hat: Hat) -> Brep:
+        """
+        Unrolls a single Hat into a flat 2D pattern using geometric properties.
+        The top face is placed on the world XY plane, and side faces are rotated
+        30 degrees outward around their shared edges with the top.
+        """
+        # Transform to align top to world plane
+        xform_to_world = self._prepare_top_transform(hat)
+
+        # Transform and collect top surface
+        unrolled_top = hat.top.DuplicateBrep()
+        unrolled_top.Transform(xform_to_world)
+
+        # Transform the top plane's Z axis to determine rotation direction
+        top_normal = Vector3d(hat.top_plane.ZAxis)
+        top_normal.Transform(xform_to_world)
+
+        # Unfold all side surfaces using their stored top_edge information
+        unfolded_sides = self._unfold_all_sides(hat.sides, xform_to_world)
+
+        # Join everything together
+        unrolled = self._join_unfolded_surfaces(unrolled_top, unfolded_sides)
+        self._unrolled_hats.append(unrolled)
+
+        return unrolled
+
+    def _prepare_top_transform(self, hat: Hat) -> Transform:
+        """
+        Prepares the transformation to move the top surface to the world XY plane.
+        """
+        # Get plane from the top surface
+        top_plane = hat.top_plane
+
+        # Create transform to align top surface to world XY plane
+        world_plane = Plane.WorldXY
+        world_plane.Origin = Point3d(0, 0, 0)
+
+        return Transform.PlaneToPlane(top_plane, world_plane)
+
+    def _unfold_all_sides(
+        self,
+        hat_sides: list[HatSide],
+        xform_to_world: Transform,
+    ) -> list[Brep]:
+        """Unfolds all side surfaces by rotating them around their shared edges."""
+        unfolded_sides: list[Brep] = []
+
+        for hat_side in hat_sides:
+            unfolded = self._unfold_single_side(hat_side, xform_to_world)
+            if unfolded is not None:
+                unfolded_sides.append(unfolded)
+
+        return unfolded_sides
+
+    def _unfold_single_side(
+        self,
+        hat_side: HatSide,
+        xform_to_world: Transform,
+    ) -> Optional[Brep]:
+        """Unfolds a single side surface around its shared edge with the top."""
+        # Get the top edge (hinge) - already stored in HatSide
+        hinge_line = Line(hat_side.top_edge.From, hat_side.top_edge.To)
+
+        # Transform the hinge to world coordinates
+        hinge_start = Point3d(hinge_line.From)
+        hinge_end = Point3d(hinge_line.To)
+        hinge_start.Transform(xform_to_world)
+        hinge_end.Transform(xform_to_world)
+
+        # Calculate rotation transform using the top normal
+        rotation_xform = self._calculate_side_rotation(hinge_start, hinge_end)
+
+        # Apply transforms: first to world plane, then rotate
+        unfolded_side = hat_side.surface.DuplicateBrep()
+        unfolded_side.Transform(xform_to_world)
+        unfolded_side.Transform(rotation_xform)
+
+        return unfolded_side
+
+    def _calculate_side_rotation(
+        self,
+        hinge_start: Point3d,
+        hinge_end: Point3d,
+    ) -> Transform:
+        """
+        Calculates the rotation transform for unfolding a side surface.
+        Rotates 30 degrees around the shared edge (hinge).
+        Uses the top plane's normal to determine rotation direction.
+        """
+        # Calculate rotation axis (along the shared edge)
+        hinge_vector = Vector3d(hinge_end - hinge_start)
+        hinge_vector.Unitize()
+
+        # Create rotation transform around the hinge edge
+        return Transform.Rotation(HAT_SIDE_ANGLE, hinge_vector, hinge_start)
+
+    def _join_unfolded_surfaces(
+        self, unrolled_top: Brep, unfolded_sides: list[Brep]
+    ) -> Brep:
+        """Joins the top and all side surfaces into a single polysurface."""
+        all_unfolded: list[Brep] = [unrolled_top]
+        all_unfolded.extend(unfolded_sides)
+
+        joined = list(Brep.JoinBreps(all_unfolded, TOLERANCE))
+
+        if len(joined) == 0:
+            raise UnexpectedShapeError(all_unfolded)
+
+        return joined[0]
+
+    def _arrange_in_grid(self, breps: list[Brep]) -> list[Brep]:
+        """
+        Arranges the unrolled Breps in a grid layout with spacing based on
+        the largest bounding box dimensions, positioned next to the original shape.
+        Also creates TextDots for labeling original and unrolled pieces.
+        """
+        if not breps:
+            return breps
+
+        # Get original shape bounding box
+        original_bbox = self._original_shape.GetBoundingBox(True)
+        original_max_x = original_bbox.Max.X
+        original_min_y = original_bbox.Min.Y
+
+        # Analyze all bounding boxes to find max width and height
+        max_width = 0.0
+        max_height = 0.0
+
+        for brep in breps:
+            bbox = brep.GetBoundingBox(True)
+            width = bbox.Max.X - bbox.Min.X
+            height = bbox.Max.Y - bbox.Min.Y
+            max_width = max(max_width, width)
+            max_height = max(max_height, height)
+
+        # Calculate grid dimensions (roughly square grid)
+        grid_cols = math.ceil(math.sqrt(len(breps)))
+
+        # Start grid offset from the original shape's boundaries with some spacing
+        grid_start_x = original_max_x + max_width * 1.0
+        grid_start_y = original_min_y
+
+        # Arrange breps in grid and create labels
+        arranged_breps: list[Brep] = []
+
+        for i, brep in enumerate(breps):
+            row = i // grid_cols
+            col = i % grid_cols
+
+            # Calculate translation
+            x_offset = grid_start_x + col * max_width * 1.2  # 20% spacing
+            y_offset = grid_start_y + row * max_height * 1.2  # 20% spacing
+
+            # Create translation transform
+            translation = Transform.Translation(x_offset, y_offset, 0)
+
+            # Apply translation
+            arranged_brep = brep.DuplicateBrep()
+            arranged_brep.Transform(translation)
+            arranged_breps.append(arranged_brep)
+
+            # Create TextDots for original and unrolled pieces
+            label = str(i + 1)  # 1-based numbering
+
+            # TextDot for original Hat piece (at its centroid)
+            original_hat = self._hats[i]
+            original_centroid = self._get_brep_centroid(original_hat.top)
+            original_dot = TextDot(label, original_centroid)
+            self._text_dots.append(original_dot)
+
+            # TextDot for unrolled piece (at its centroid)
+            unrolled_centroid = self._get_brep_centroid(arranged_brep)
+            unrolled_dot = TextDot(label, unrolled_centroid)
+            self._text_dots.append(unrolled_dot)
+
+        return arranged_breps
+
+    def _get_brep_centroid(self, brep: Brep) -> Point3d:
+        """Calculates the centroid of a Brep using area mass properties."""
+        props = AreaMassProperties.Compute(brep)
+        return props.Centroid
+
+    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+        """Get intermediate debug geometries from this step."""
+        return list(self._unrolled_hats)
+
+    def get_text_dots(self) -> list[TextDot]:
+        """Get TextDot labels for original and unrolled pieces."""
+        return list(self._text_dots)
+
+
+def extract_input(name: str, expected_type: type[T]) -> T:
     """
-    Type checks and guarantees return type as T.
-    Raises error if obj is not of expected_type.
+    Extracts and validates an input value from globals.
+    The input value is removed from globals after extraction.
     """
+    obj = globals().pop(name)
     if not isinstance(obj, expected_type):
         raise InvalidInputError(expected_type, obj)
     return obj
@@ -635,26 +930,31 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
     hat_builder = HatBuilder(shape, refined_pieces)
     hats = hat_builder.build()
 
-    geo_builders: Sequence[GeometryBuilder] = [
+    hat_unroller = HatUnroller(hats, shape)
+    unrolled_hats = hat_unroller.build()
+
+    geo_builders: list[GeometryBuilder] = [
         surface_splitter,
         polygon_builder,
         hat_builder,
+        hat_unroller,
     ]
 
     return GeometryOutput(
-        result=hats,
+        result=unrolled_hats,
         intermediates=[b.get_intermediates() for b in geo_builders],
+        labels=hat_unroller.get_text_dots(),
     )
 
 
 if __name__ == "__main__":
     geo_input = GeometryInput(
-        smooth_surface=ensure_type(globals().pop("smooth_surface"), Brep),
-        piece_count=ensure_type(globals().pop("piece_count"), int),
-        seed=ensure_type(globals().pop("seed"), int),
-        collapse_length=ensure_type(globals().pop("collapse_length"), float),
+        smooth_surface=extract_input("smooth_surface", Brep),
+        piece_count=extract_input("piece_count", int),
+        seed=extract_input("seed", int),
+        collapse_length=extract_input("collapse_length", float),
     )
     try:
-        result, intermediates = main(geo_input)
+        result, intermediates, labels = main(geo_input)
     except Exception as e:
         error = e
