@@ -1,6 +1,10 @@
+"""Generate pavilion structures from smooth Brep shapes using Voronoi tessellation."""
+
+from __future__ import annotations
+
 import math
 from importlib import import_module
-from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
+from typing import Any, NamedTuple, Protocol, TypeVar
 
 from Rhino.Geometry import (
     AreaMassProperties,
@@ -23,10 +27,12 @@ TOLERANCE = 0.001
 OFFSET_DISTANCE_FACTOR = 0.08
 COLLAPSE_PRECISION = 2
 HAT_SIDE_ANGLE = math.pi / 6
+MIN_POLYGON_VERTICES = 3
+MIN_TOP_POINTS = 2
 
 
 def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
-    """Populates a Brep geometry with random points."""
+    """Populate a Brep geometry with random points."""
     module = import_module("ghpythonlib.components")
     func = getattr(module, "PopulateGeometry")
     result = func(brep, piece_count, seed)
@@ -34,7 +40,7 @@ def populate_geometry(brep: Brep, piece_count: int, seed: int) -> list[Point3d]:
 
 
 def voronoi_3d(points: list[Point3d]) -> list[Brep]:
-    """Generates 3D Voronoi cells from a sequence of points."""
+    """Generate 3D Voronoi cells from a sequence of points."""
     module = import_module("ghpythonlib.components")
     func = getattr(module, "Voronoi3D")
     result = func(points)
@@ -44,7 +50,8 @@ def voronoi_3d(points: list[Point3d]) -> list[Brep]:
 class InvalidInputError(Exception):
     """Exception raised for invalid input types."""
 
-    def __init__(self, expected_type: type[Any], actual_value: Any) -> None:
+    def __init__(self, expected_type: type[Any], actual_value: object) -> None:
+        """Initialize the exception with expected type and actual value."""
         message = f"Invalid input value: expected {expected_type}, got {actual_value}"
         super().__init__(message)
 
@@ -56,16 +63,14 @@ class UnexpectedShapeError(Exception):
         self,
         geometry: list[Any],
     ) -> None:
+        """Initialize the exception with the unexpected geometry."""
         self.preview = geometry
         message = f"Unexpected geometry {geometry}"
         super().__init__(message)
 
 
 class HatSide(NamedTuple):
-    """
-    Represents a side of a hat structure
-    defined by its base edge and top edge.
-    """
+    """Represent a side of a hat structure defined by its base edge and top edge."""
 
     top_edge: Line
     bottom_edge: Line
@@ -73,10 +78,7 @@ class HatSide(NamedTuple):
 
 
 class Hat(NamedTuple):
-    """
-    Represents a hat structure
-    with a base curve, an top plane, a top curve, and surfaces.
-    """
+    """Represent a hat structure with base curve, top plane, and surfaces."""
 
     base_curve: PolylineCurve
     top_plane: Plane
@@ -97,18 +99,18 @@ class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
     result: list[Brep]
-    intermediates: list[list[Union[GeometryBase, Point3d, Plane]]]
+    intermediates: list[list[GeometryBase | Point3d | Plane]]
     labels: list[TextDot]
 
 
 class GeometryBuilder(Protocol):
     """Protocol for geometry build step worker classes."""
 
-    def build(self) -> Any:
+    def build(self) -> object:
         """Do the work of this geometry build step."""
         ...
 
-    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
         """Get intermediate geometries from this step for debugging."""
         ...
 
@@ -117,6 +119,7 @@ class SurfaceSplitter:
     """Builder class for splitting smooth surfaces into pieces."""
 
     def __init__(self, smooth_surface: Brep, piece_count: int, seed: int) -> None:
+        """Initialize the surface splitter with parameters."""
         self._smooth_surface = smooth_surface
         self._piece_count = piece_count
         self._seed = seed
@@ -124,26 +127,28 @@ class SurfaceSplitter:
         self._voronoi_cells: list[Brep] = []
 
     def build(self) -> list[Curve]:
+        """Build list of curves by splitting the surface."""
         surface = self._smooth_surface
         self._populated_points = populate_geometry(
-            surface, self._piece_count, self._seed
+            surface,
+            self._piece_count,
+            self._seed,
         )
         self._voronoi_cells = voronoi_3d(self._populated_points)
-        raw_pieces = [
+        return [
             self._join_curves(list(Intersection.BrepBrep(cell, surface, TOLERANCE)[1]))
             for cell in self._voronoi_cells
         ]
-        return raw_pieces
 
-    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
         """Get intermediate debug geometries from this step."""
-        result: list[Union[GeometryBase, Point3d, Plane]] = []
+        result: list[GeometryBase | Point3d | Plane] = []
         result.extend(self._populated_points)
         result.extend(self._voronoi_cells)
         return result
 
     def _join_curves(self, curves: list[Curve]) -> Curve:
-        """Joins multiple curves into a single curve."""
+        """Join multiple curves into a single curve."""
         joined = list(Curve.JoinCurves(curves, TOLERANCE))
         if len(joined) != 1:
             raise UnexpectedShapeError(curves)
@@ -154,13 +159,14 @@ class PolygonBuilder:
     """Builder class for creating polyline curves from curves."""
 
     def __init__(self, raw_pieces: list[Curve], collapse_length: float) -> None:
+        """Initialize the polygon builder with raw pieces and collapse length."""
         self._raw_pieces = raw_pieces
         self._collapse_length = collapse_length
         self._refined_pieces: list[PolylineCurve] = []
         self._vertex_map: dict[tuple[float, float, float], Point3d] = {}
 
     def build(self) -> list[PolylineCurve]:
-        """Builds closed polyline curves from raw curves."""
+        """Build closed polyline curves from raw curves."""
         # First pass: extract all vertices and build collapse mapping
         all_points: list[Point3d] = []
         for piece in self._raw_pieces:
@@ -174,8 +180,8 @@ class PolygonBuilder:
         return [self._build_polygon(p) for p in self._raw_pieces]
 
     def _build_vertex_collapse_map(self, points: list[Point3d]) -> None:
-        """
-        Builds a map from original vertex positions to collapsed positions.
+        """Build a map from original vertex positions to collapsed positions.
+
         Vertices that are close together will map to the same collapsed position.
         """
         # Sort points to ensure consistent processing
@@ -202,7 +208,7 @@ class PolygonBuilder:
                 self._vertex_map[point_key] = point
 
     def _get_collapsed_point(self, point: Point3d) -> Point3d:
-        """Gets the collapsed version of a point using the vertex map."""
+        """Get the collapsed version of a point using the vertex map."""
         point_key = (
             round(point.X, COLLAPSE_PRECISION),
             round(point.Y, COLLAPSE_PRECISION),
@@ -211,22 +217,20 @@ class PolygonBuilder:
         return self._vertex_map.get(point_key, point)
 
     def _build_polygon(self, curve: Curve) -> PolylineCurve:
-        """Builds a closed polyline curve from a curve."""
+        """Build a closed polyline curve from a curve."""
         points = self._extract_vertices(curve)
         collapsed_points = self._collapse_small_segments(points)
         polyline = self._points_to_closed_polyline_curve(collapsed_points)
         self._refined_pieces.append(polyline)
         return polyline
 
-    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
         """Get intermediate debug geometries from this step."""
         return list(self._refined_pieces)
 
     def _collapse_small_segments(self, points: list[Point3d]) -> list[Point3d]:
-        """
-        Collapses small segments by using the global vertex collapse map.
-        """
-        if len(points) < 3:
+        """Collapse small segments by using the global vertex collapse map."""
+        if len(points) < MIN_POLYGON_VERTICES:
             return list(points)
 
         # Apply global vertex collapse mapping
@@ -244,18 +248,18 @@ class PolygonBuilder:
             collapsed.pop()
 
         # Need at least 3 points for a polygon
-        if len(collapsed) < 3:
+        if len(collapsed) < MIN_POLYGON_VERTICES:
             # If collapsing would result in too few points, return original
             return list(points)
 
         return collapsed
 
     def _points_to_closed_polyline_curve(self, points: list[Point3d]) -> PolylineCurve:
-        """Converts a sequence of points to a closed polyline curve."""
+        """Convert a sequence of points to a closed polyline curve."""
         return PolylineCurve([*points, points[0]])
 
     def _extract_vertices(self, curve: Curve) -> list[Point3d]:
-        """Extracts vertices from a curve's segments."""
+        """Extract vertices from a curve's segments."""
         segments = curve.DuplicateSegments()
         points: list[Point3d] = []
         if not curve.IsClosed:
@@ -268,18 +272,21 @@ class HatBuilder:
     """Builder class for creating Hat structures from polyline curves."""
 
     def __init__(
-        self, original_shape: Brep, refined_pieces: list[PolylineCurve]
+        self,
+        original_shape: Brep,
+        refined_pieces: list[PolylineCurve],
     ) -> None:
+        """Initialize the hat builder with original shape and refined pieces."""
         self._original_shape = original_shape
         self._refined_pieces = refined_pieces
-        self._hat_previews: list[Union[Curve, Plane, Brep]] = []
+        self._hat_previews: list[Curve | Plane | Brep] = []
 
     def build(self) -> list[Hat]:
-        """Builds Hats from a sequence of polyline curves."""
+        """Build Hats from a sequence of polyline curves."""
         return [self._build_hat(p) for p in self._refined_pieces]
 
     def _build_hat(self, curve: PolylineCurve) -> Hat:
-        """Builds a Hat from a polyline curve."""
+        """Build a Hat from a polyline curve."""
         top_plane = self._build_top_plane(curve)
         curve = self._orient_curve(curve, top_plane.ZAxis)
         top_curve = self._build_top_curve(curve, top_plane)
@@ -304,21 +311,18 @@ class HatBuilder:
             sides=side_surfaces,
         )
 
-    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
         """Get intermediate debug geometries from this step."""
         return list(self._hat_previews)
 
     def _extract_vertices(self, curve: PolylineCurve) -> list[Point3d]:
-        """Extracts vertices from a curve's segments."""
+        """Extract vertices from a curve's segments."""
         if not curve.IsClosed:
             raise UnexpectedShapeError([curve])
         return list(curve.ToArray())[:-1]  # Exclude duplicate closing point
 
     def _build_top_plane(self, curve: PolylineCurve) -> Plane:
-        """
-        Builds an top plane
-        by fitting a plane to the curve's points.
-        """
+        """Build a top plane by fitting a plane to the curve's points."""
         points = self._extract_vertices(curve)
         center = self._calculate_center(points)
         plane = Plane.FitPlaneToPoints(points)[1]
@@ -337,16 +341,17 @@ class HatBuilder:
         return plane
 
     def _orient_curve(
-        self, curve: PolylineCurve, plane_normal: Vector3d
+        self,
+        curve: PolylineCurve,
+        plane_normal: Vector3d,
     ) -> PolylineCurve:
-        """
-        Orients the curve to be clockwise
-        when viewed from the plane normal direction.
+        """Orient the curve to be clockwise when viewed from the plane normal direction.
+
         If the curve is clockwise, it reverses the point order.
         """
         points = self._extract_vertices(curve)
 
-        if len(points) < 3:
+        if len(points) < MIN_POLYGON_VERTICES:
             return curve
 
         # Calculate the signed area using the plane normal
@@ -382,23 +387,16 @@ class HatBuilder:
         return curve
 
     def _calculate_diameter(self, points: list[Point3d]) -> float:
-        """
-        Calculates the diameter of the polyline curve
-        as the maximum distance between any two points.
-        """
+        """Calculate the diameter as the maximum distance between any two points."""
         max_distance = 0.0
         for i, p1 in enumerate(points):
             for p2 in points[i + 1 :]:
                 distance = p1.DistanceTo(p2)
-                if distance > max_distance:
-                    max_distance = distance
+                max_distance = max(max_distance, distance)
         return max_distance
 
     def _is_flipped(self, plane: Plane) -> bool:
-        """
-        Checks if the plane normal is opposite to the original shape's normal.
-        Returns True if the plane should be flipped.
-        """
+        """Check if the plane normal is opposite to the original shape's normal."""
         # Find the closest point on the original shape from the plane origin
         closest_point = self._original_shape.ClosestPoint(plane.Origin)
 
@@ -418,11 +416,11 @@ class HatBuilder:
         return Vector3d.Multiply(plane.ZAxis, shape_normal) < 0
 
     def _build_top_curve(
-        self, base_curve: PolylineCurve, top_plane: Plane
+        self,
+        base_curve: PolylineCurve,
+        top_plane: Plane,
     ) -> PolylineCurve:
-        """
-        Builds the top curve on the top plane.
-        """
+        """Build the top curve on the top plane."""
         base_points = self._extract_vertices(base_curve)
         center = self._calculate_center(base_points)
 
@@ -435,7 +433,7 @@ class HatBuilder:
             projected_lines.append(intersection_line)
 
         # Build top curve by finding intersection points between adjacent lines
-        if len(projected_lines) < 3:
+        if len(projected_lines) < MIN_POLYGON_VERTICES:
             raise UnexpectedShapeError(projected_lines)
 
         top_points: list[Point3d] = []
@@ -446,7 +444,8 @@ class HatBuilder:
 
             # Find where current line meets the next line
             intersection_point = self._find_line_intersection_point(
-                current_line, next_line
+                current_line,
+                next_line,
             )
             top_points.append(intersection_point)
 
@@ -454,12 +453,10 @@ class HatBuilder:
         polyline = PolylineCurve([*top_points, top_points[0]])
 
         # Check for self-intersections and clean them
-        polyline = self._clean_self_intersections(polyline)
-
-        return polyline
+        return self._clean_self_intersections(polyline)
 
     def _calculate_center(self, points: list[Point3d]) -> Point3d:
-        """Calculates the center point of a sequence of points."""
+        """Calculate the center point of a sequence of points."""
         return Point3d(
             sum(p.X for p in points) / len(points),
             sum(p.Y for p in points) / len(points),
@@ -467,7 +464,7 @@ class HatBuilder:
         )
 
     def _get_area(self, curve: Curve) -> float:
-        """Calculates the area of a closed curve."""
+        """Calculate the area of a closed curve."""
         if not curve.IsClosed:
             raise UnexpectedShapeError([curve])
 
@@ -475,8 +472,8 @@ class HatBuilder:
         return area_props.Area
 
     def _clean_self_intersections(self, polyline: PolylineCurve) -> PolylineCurve:
-        """
-        Detects and removes self-intersections from a polyline curve.
+        """Detect and remove self-intersections from a polyline curve.
+
         Returns the largest piece if self-intersections are found.
         """
         # Check for self-intersections
@@ -514,8 +511,8 @@ class HatBuilder:
 
         raise UnexpectedShapeError(split_curves)
 
-    def _create_surface_from_curve(self, curve: PolylineCurve) -> Optional[Brep]:
-        """Creates a planar surface from a closed curve."""
+    def _create_surface_from_curve(self, curve: PolylineCurve) -> Brep | None:
+        """Create a planar surface from a closed curve."""
         if not curve.IsClosed:
             raise UnexpectedShapeError([curve])
 
@@ -528,11 +525,11 @@ class HatBuilder:
         return breps[0]
 
     def _create_hat_sides(
-        self, base_curve: PolylineCurve, top_curve: PolylineCurve
+        self,
+        base_curve: PolylineCurve,
+        top_curve: PolylineCurve,
     ) -> list[HatSide]:
-        """
-        Creates side surfaces by connecting base curve segments to top curve segments.
-        """
+        """Create side surfaces connecting base and top curve segments."""
         base_points = self._extract_vertices(base_curve)
         top_points = self._extract_vertices(top_curve)
 
@@ -546,7 +543,9 @@ class HatBuilder:
             # Find the two closest consecutive points on the top curve
             # This ensures we create a proper quad that connects to the top surface edge
             closest_indices = self._find_two_closest_consecutive_points(
-                base_start, base_end, top_points
+                base_start,
+                base_end,
+                top_points,
             )
 
             if closest_indices is None:
@@ -578,14 +577,13 @@ class HatBuilder:
         return side_surfaces
 
     def _find_two_closest_consecutive_points(
-        self, base_start: Point3d, base_end: Point3d, top_points: list[Point3d]
-    ) -> Optional[tuple[int, int]]:
-        """
-        Finds two consecutive points on the top curve
-        that are closest to the base segment.
-        Returns indices of the two consecutive points, or None if not found.
-        """
-        if len(top_points) < 2:
+        self,
+        base_start: Point3d,
+        base_end: Point3d,
+        top_points: list[Point3d],
+    ) -> tuple[int, int] | None:
+        """Find two consecutive points on top curve closest to base segment."""
+        if len(top_points) < MIN_TOP_POINTS:
             return None
 
         # Calculate the midpoint of the base segment
@@ -616,12 +614,13 @@ class HatBuilder:
         return (best_idx, (best_idx + 1) % len(top_points))
 
     def _find_line_intersection_point(self, line1: Line, line2: Line) -> Point3d:
-        """
-        Finds the intersection point between two lines on a plane.
+        """Find the intersection point between two lines on a plane.
+
         Projects line1's starting point along line1's direction onto an infinite line2.
         """
         # Treat line2 as infinite by using LineLine without bounded constraint
-        success, t1, _ = Intersection.LineLine(line1, line2, TOLERANCE, False)
+        bounded = False
+        success, t1, _ = Intersection.LineLine(line1, line2, TOLERANCE, bounded)
 
         if not success:
             raise UnexpectedShapeError([line1, line2])
@@ -635,9 +634,9 @@ class HatBuilder:
         center: Point3d,
         top_plane: Plane,
     ) -> Line:
-        """
-        Projects segment endpoints along a 60-degree rotated direction
-        to find their intersection with the top plane.
+        """Project segment endpoints along a 60-degree rotated direction.
+
+        Finds their intersection with the top plane.
         """
         # Calculate segment midpoint
         segment_mid = Point3d((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2, (p1.Z + p2.Z) / 2)
@@ -675,16 +674,15 @@ class HatBuilder:
         top_p2 = self._project_point_to_plane(p2, projection_direction, top_plane)
 
         # Create the intersection line
-        intersection_line = Line(top_p1, top_p2)
-
-        return intersection_line
+        return Line(top_p1, top_p2)
 
     def _project_point_to_plane(
-        self, point: Point3d, direction: Vector3d, plane: Plane
+        self,
+        point: Point3d,
+        direction: Vector3d,
+        plane: Plane,
     ) -> Point3d:
-        """
-        Projects a point along a direction vector to intersect with a plane.
-        """
+        """Project a point along a direction vector to intersect with a plane."""
         # Create a ray from the point in the given direction
         ray = Line(point, direction)
 
@@ -702,19 +700,20 @@ class HatUnroller:
     """Builder class for unrolling Hat structures into flat 2D patterns."""
 
     def __init__(self, hats: list[Hat], original_shape: Brep) -> None:
+        """Initialize the hat unroller with hats and original shape."""
         self._original_shape = original_shape
         self._hats = hats
         self._unrolled_hats: list[Brep] = []
         self._text_dots: list[TextDot] = []
 
     def build(self) -> list[Brep]:
-        """Builds unrolled flat patterns from Hat structures."""
+        """Build unrolled flat patterns from Hat structures."""
         unrolled = [self._unroll_hat(hat) for hat in self._hats]
         return self._arrange_in_grid(unrolled)
 
     def _unroll_hat(self, hat: Hat) -> Brep:
-        """
-        Unrolls a single Hat into a flat 2D pattern using geometric properties.
+        """Unroll a single Hat into a flat 2D pattern using geometric properties.
+
         The top face is placed on the world XY plane, and side faces are rotated
         30 degrees outward around their shared edges with the top.
         """
@@ -739,9 +738,7 @@ class HatUnroller:
         return unrolled
 
     def _prepare_top_transform(self, hat: Hat) -> Transform:
-        """
-        Prepares the transformation to move the top surface to the world XY plane.
-        """
+        """Prepare the transformation to move the top surface to the world XY plane."""
         # Get plane from the top surface
         top_plane = hat.top_plane
 
@@ -770,7 +767,7 @@ class HatUnroller:
         self,
         hat_side: HatSide,
         xform_to_world: Transform,
-    ) -> Optional[Brep]:
+    ) -> Brep | None:
         """Unfolds a single side surface around its shared edge with the top."""
         # Get the top edge (hinge) - already stored in HatSide
         hinge_line = Line(hat_side.top_edge.From, hat_side.top_edge.To)
@@ -796,8 +793,8 @@ class HatUnroller:
         hinge_start: Point3d,
         hinge_end: Point3d,
     ) -> Transform:
-        """
-        Calculates the rotation transform for unfolding a side surface.
+        """Calculate the rotation transform for unfolding a side surface.
+
         Rotates 30 degrees around the shared edge (hinge).
         Uses the top plane's normal to determine rotation direction.
         """
@@ -809,9 +806,11 @@ class HatUnroller:
         return Transform.Rotation(HAT_SIDE_ANGLE, hinge_vector, hinge_start)
 
     def _join_unfolded_surfaces(
-        self, unrolled_top: Brep, unfolded_sides: list[Brep]
+        self,
+        unrolled_top: Brep,
+        unfolded_sides: list[Brep],
     ) -> Brep:
-        """Joins the top and all side surfaces into a single polysurface."""
+        """Join the top and all side surfaces into a single polysurface."""
         all_unfolded: list[Brep] = [unrolled_top]
         all_unfolded.extend(unfolded_sides)
 
@@ -823,16 +822,18 @@ class HatUnroller:
         return joined[0]
 
     def _arrange_in_grid(self, breps: list[Brep]) -> list[Brep]:
-        """
-        Arranges the unrolled Breps in a grid layout with spacing based on
-        the largest bounding box dimensions, positioned next to the original shape.
-        Also creates TextDots for labeling original and unrolled pieces.
+        """Arrange the unrolled Breps in a grid layout with spacing.
+
+        Based on the largest bounding box dimensions, positioned next to the
+        original shape. Also creates TextDots for labeling original and
+        unrolled pieces.
         """
         if not breps:
             return breps
 
         # Get original shape bounding box
-        original_bbox = self._original_shape.GetBoundingBox(True)
+        accurate = True
+        original_bbox = self._original_shape.GetBoundingBox(accurate)
         original_max_x = original_bbox.Max.X
         original_min_y = original_bbox.Min.Y
 
@@ -841,7 +842,7 @@ class HatUnroller:
         max_height = 0.0
 
         for brep in breps:
-            bbox = brep.GetBoundingBox(True)
+            bbox = brep.GetBoundingBox(accurate)
             width = bbox.Max.X - bbox.Min.X
             height = bbox.Max.Y - bbox.Min.Y
             max_width = max(max_width, width)
@@ -890,11 +891,11 @@ class HatUnroller:
         return arranged_breps
 
     def _get_brep_centroid(self, brep: Brep) -> Point3d:
-        """Calculates the centroid of a Brep using area mass properties."""
+        """Calculate the centroid of a Brep using area mass properties."""
         props = AreaMassProperties.Compute(brep)
         return props.Centroid
 
-    def get_intermediates(self) -> list[Union[GeometryBase, Point3d, Plane]]:
+    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
         """Get intermediate debug geometries from this step."""
         return list(self._unrolled_hats)
 
@@ -904,8 +905,8 @@ class HatUnroller:
 
 
 def extract_input(name: str, expected_type: type[T]) -> T:
-    """
-    Extracts and validates an input value from globals.
+    """Extract and validate an input value from globals.
+
     The input value is removed from globals after extraction.
     """
     obj = globals().pop(name)
@@ -915,10 +916,7 @@ def extract_input(name: str, expected_type: type[T]) -> T:
 
 
 def main(geo_input: GeometryInput) -> GeometryOutput:
-    """
-    Main function to generate pavilion
-    from a smooth Brep shape using Voronoi tessellation.
-    """
+    """Generate pavilion from a smooth Brep shape using Voronoi tessellation."""
     shape, piece_count, seed, collapse_length = geo_input
 
     surface_splitter = SurfaceSplitter(shape, piece_count, seed)
