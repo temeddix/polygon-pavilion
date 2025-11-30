@@ -94,6 +94,13 @@ class GeometryOutput(NamedTuple):
     labels: list[TextDot]
 
 
+class UnrolledHat(NamedTuple):
+    """Represent an unrolled, flat hat shape."""
+
+    top: Brep
+    sides: list[Brep]
+
+
 class GeometryBuilder(Protocol):
     """Protocol for geometry build step worker classes."""
 
@@ -690,19 +697,19 @@ class HatBuilder:
 class HatUnroller:
     """Builder class for unrolling Hat structures into flat 2D patterns."""
 
-    def __init__(self, hats: list[Hat], original_shape: Brep) -> None:
+    def __init__(self, hats: list[Hat], smooth_surface: Brep) -> None:
         """Initialize the hat unroller with hats and original shape."""
-        self._original_shape = original_shape
+        self._smooth_surface = smooth_surface
         self._hats = hats
         self._unrolled_hats: list[Brep] = []
         self._text_dots: list[TextDot] = []
 
-    def build(self) -> list[Brep]:
+    def build(self) -> list[UnrolledHat]:
         """Build unrolled flat patterns from Hat structures."""
         unrolled = [self._unroll_hat(hat) for hat in self._hats]
         return self._arrange_in_grid(unrolled)
 
-    def _unroll_hat(self, hat: Hat) -> Brep:
+    def _unroll_hat(self, hat: Hat) -> UnrolledHat:
         """Unroll a single Hat into a flat 2D pattern using geometric properties.
 
         The top face is placed on the world XY plane, and side faces are rotated
@@ -722,11 +729,7 @@ class HatUnroller:
         # Unfold all side surfaces using their stored top_edge information
         unfolded_sides = self._unfold_all_sides(hat.sides, xform_to_world)
 
-        # Join everything together
-        unrolled = self._join_unfolded_surfaces(unrolled_top, unfolded_sides)
-        self._unrolled_hats.append(unrolled)
-
-        return unrolled
+        return UnrolledHat(top=unrolled_top, sides=unfolded_sides)
 
     def _prepare_top_transform(self, hat: Hat) -> Transform:
         """Prepare the transformation to move the top surface to the world XY plane."""
@@ -796,7 +799,120 @@ class HatUnroller:
         # Create rotation transform around the hinge edge
         return Transform.Rotation(HAT_SIDE_ANGLE, hinge_vector, hinge_start)
 
-    def _join_unfolded_surfaces(
+    def _arrange_in_grid(self, breps: list[UnrolledHat]) -> list[UnrolledHat]:
+        """Arrange the unrolled Breps in a grid layout with spacing.
+
+        Based on the largest bounding box dimensions, positioned next to the
+        original shape. Also creates TextDots for labeling original and
+        unrolled pieces.
+        """
+        # Get original shape bounding box
+        accurate = True
+        original_bbox = self._smooth_surface.GetBoundingBox(accurate)
+        original_max_x = original_bbox.Max.X
+        original_min_y = original_bbox.Min.Y
+
+        # Analyze all bounding boxes to find max width and height
+        max_width = 0.0
+        max_height = 0.0
+
+        for unrolled_hat in breps:
+            # Get combined bounding box of top and all sides
+            all_breps = [unrolled_hat.top, *unrolled_hat.sides]
+
+            # Calculate combined bounding box
+            min_x = min(b.GetBoundingBox(accurate).Min.X for b in all_breps)
+            max_x = max(b.GetBoundingBox(accurate).Max.X for b in all_breps)
+            min_y = min(b.GetBoundingBox(accurate).Min.Y for b in all_breps)
+            max_y = max(b.GetBoundingBox(accurate).Max.Y for b in all_breps)
+
+            width = max_x - min_x
+            height = max_y - min_y
+            max_width = max(max_width, width)
+            max_height = max(max_height, height)
+
+        # Calculate grid dimensions (roughly square grid)
+        grid_cols = math.ceil(math.sqrt(len(breps)))
+
+        # Start grid offset from the original shape's boundaries with some spacing
+        grid_start_x = original_max_x + max_width * 1.0
+        grid_start_y = original_min_y
+
+        # Arrange breps in grid and create labels
+        arranged_hats: list[UnrolledHat] = []
+
+        for i, unrolled_hat in enumerate(breps):
+            row = i // grid_cols
+            col = i % grid_cols
+
+            # Calculate translation
+            x_offset = grid_start_x + col * max_width * 1.2  # 20% spacing
+            y_offset = grid_start_y + row * max_height * 1.2  # 20% spacing
+
+            # Create translation transform
+            translation = Transform.Translation(x_offset, y_offset, 0)
+
+            # Apply translation to top and all sides
+            arranged_top = unrolled_hat.top.DuplicateBrep()
+            arranged_top.Transform(translation)
+
+            arranged_sides: list[Brep] = []
+            for side in unrolled_hat.sides:
+                arranged_side = side.DuplicateBrep()
+                arranged_side.Transform(translation)
+                arranged_sides.append(arranged_side)
+
+            arranged_hat = UnrolledHat(top=arranged_top, sides=arranged_sides)
+            arranged_hats.append(arranged_hat)
+
+            # Create TextDots for original and unrolled pieces
+            label = str(i + 1)  # 1-based numbering
+
+            # TextDot for original Hat piece (at its centroid)
+            original_hat = self._hats[i]
+            original_centroid = self._get_brep_centroid(original_hat.top)
+            original_dot = TextDot(label, original_centroid)
+            self._text_dots.append(original_dot)
+
+            # TextDot for unrolled piece (at its centroid)
+            unrolled_centroid = self._get_brep_centroid(arranged_top)
+            unrolled_dot = TextDot(label, unrolled_centroid)
+            self._text_dots.append(unrolled_dot)
+
+        return arranged_hats
+
+    def _get_brep_centroid(self, brep: Brep) -> Point3d:
+        """Calculate the centroid of a Brep using area mass properties."""
+        props = AreaMassProperties.Compute(brep)
+        return props.Centroid
+
+    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+        """Get intermediate debug geometries from this step."""
+        return list(self._unrolled_hats)
+
+    def get_text_dots(self) -> list[TextDot]:
+        """Get TextDot labels for original and unrolled pieces."""
+        return list(self._text_dots)
+
+
+class HatSettler:
+    """Builder class for settling hats for gluing and assembly."""
+
+    def __init__(self, unrolled_hats: list[UnrolledHat]) -> None:
+        """Initialize the hat settler."""
+        self._unrolled_hats = unrolled_hats
+
+    def build(self) -> list[Brep]:
+        """Build the hat settling step."""
+        return [
+            self._join_adjacent_breps(hat.top, hat.sides) for hat in self._unrolled_hats
+        ]
+
+    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+        """Get intermediate debug geometries from this step."""
+        return []
+
+    def _join_adjacent_breps(
         self,
         unrolled_top: Brep,
         unfolded_sides: list[Brep],
@@ -811,88 +927,6 @@ class HatUnroller:
             raise UnexpectedShapeError(all_unfolded)
 
         return joined[0]
-
-    def _arrange_in_grid(self, breps: list[Brep]) -> list[Brep]:
-        """Arrange the unrolled Breps in a grid layout with spacing.
-
-        Based on the largest bounding box dimensions, positioned next to the
-        original shape. Also creates TextDots for labeling original and
-        unrolled pieces.
-        """
-        if not breps:
-            return breps
-
-        # Get original shape bounding box
-        accurate = True
-        original_bbox = self._original_shape.GetBoundingBox(accurate)
-        original_max_x = original_bbox.Max.X
-        original_min_y = original_bbox.Min.Y
-
-        # Analyze all bounding boxes to find max width and height
-        max_width = 0.0
-        max_height = 0.0
-
-        for brep in breps:
-            bbox = brep.GetBoundingBox(accurate)
-            width = bbox.Max.X - bbox.Min.X
-            height = bbox.Max.Y - bbox.Min.Y
-            max_width = max(max_width, width)
-            max_height = max(max_height, height)
-
-        # Calculate grid dimensions (roughly square grid)
-        grid_cols = math.ceil(math.sqrt(len(breps)))
-
-        # Start grid offset from the original shape's boundaries with some spacing
-        grid_start_x = original_max_x + max_width * 1.0
-        grid_start_y = original_min_y
-
-        # Arrange breps in grid and create labels
-        arranged_breps: list[Brep] = []
-
-        for i, brep in enumerate(breps):
-            row = i // grid_cols
-            col = i % grid_cols
-
-            # Calculate translation
-            x_offset = grid_start_x + col * max_width * 1.2  # 20% spacing
-            y_offset = grid_start_y + row * max_height * 1.2  # 20% spacing
-
-            # Create translation transform
-            translation = Transform.Translation(x_offset, y_offset, 0)
-
-            # Apply translation
-            arranged_brep = brep.DuplicateBrep()
-            arranged_brep.Transform(translation)
-            arranged_breps.append(arranged_brep)
-
-            # Create TextDots for original and unrolled pieces
-            label = str(i + 1)  # 1-based numbering
-
-            # TextDot for original Hat piece (at its centroid)
-            original_hat = self._hats[i]
-            original_centroid = self._get_brep_centroid(original_hat.top)
-            original_dot = TextDot(label, original_centroid)
-            self._text_dots.append(original_dot)
-
-            # TextDot for unrolled piece (at its centroid)
-            unrolled_centroid = self._get_brep_centroid(arranged_brep)
-            unrolled_dot = TextDot(label, unrolled_centroid)
-            self._text_dots.append(unrolled_dot)
-
-        return arranged_breps
-
-    def _get_brep_centroid(self, brep: Brep) -> Point3d:
-        """Calculate the centroid of a Brep using area mass properties."""
-        props = AreaMassProperties.Compute(brep)
-        return props.Centroid
-
-    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
-        """Get intermediate debug geometries from this step."""
-        return list(self._unrolled_hats)
-
-    def get_text_dots(self) -> list[TextDot]:
-        """Get TextDot labels for original and unrolled pieces."""
-        return list(self._text_dots)
 
 
 def extract_input(name: str, expected_type: type[T]) -> T:
@@ -923,6 +957,8 @@ def main() -> GeometryOutput:
     hats = hat_builder.build()
     hat_unroller = HatUnroller(hats, smooth_surface)
     unrolled_hats = hat_unroller.build()
+    hat_settler = HatSettler(unrolled_hats)
+    settled_hats = hat_settler.build()
 
     # Collect intermediates for debugging
     geo_builders: list[GeometryBuilder] = [
@@ -930,11 +966,12 @@ def main() -> GeometryOutput:
         polygon_builder,
         hat_builder,
         hat_unroller,
+        hat_settler,
     ]
 
     # Return final output
     return GeometryOutput(
-        result=unrolled_hats,
+        result=settled_hats,
         intermediates=[b.get_intermediates() for b in geo_builders],
         labels=hat_unroller.get_text_dots(),
     )
