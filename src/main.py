@@ -86,15 +86,6 @@ class Hat(NamedTuple):
     sides: list[HatSide]
 
 
-class GeometryInput(NamedTuple):
-    """Input parameters for geometry processing."""
-
-    smooth_surface: Brep
-    piece_count: int
-    seed: int
-    collapse_length: float
-
-
 class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
@@ -915,22 +906,25 @@ def extract_input(name: str, expected_type: type[T]) -> T:
     return obj
 
 
-def main(geo_input: GeometryInput) -> GeometryOutput:
+def main() -> GeometryOutput:
     """Generate pavilion from a smooth Brep shape using Voronoi tessellation."""
-    shape, piece_count, seed, collapse_length = geo_input
+    # Extract Grasshopper component inputs
+    smooth_surface = extract_input("smooth_surface", Brep)
+    piece_count = extract_input("piece_count", int)
+    seed = extract_input("seed", int)
+    collapse_length = extract_input("collapse_length", float)
 
-    surface_splitter = SurfaceSplitter(shape, piece_count, seed)
+    # Build geometry using builders
+    surface_splitter = SurfaceSplitter(smooth_surface, piece_count, seed)
     raw_pieces = surface_splitter.build()
-
     polygon_builder = PolygonBuilder(raw_pieces, collapse_length)
     refined_pieces = polygon_builder.build()
-
-    hat_builder = HatBuilder(shape, refined_pieces)
+    hat_builder = HatBuilder(smooth_surface, refined_pieces)
     hats = hat_builder.build()
-
-    hat_unroller = HatUnroller(hats, shape)
+    hat_unroller = HatUnroller(hats, smooth_surface)
     unrolled_hats = hat_unroller.build()
 
+    # Collect intermediates for debugging
     geo_builders: list[GeometryBuilder] = [
         surface_splitter,
         polygon_builder,
@@ -938,6 +932,7 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
         hat_unroller,
     ]
 
+    # Return final output
     return GeometryOutput(
         result=unrolled_hats,
         intermediates=[b.get_intermediates() for b in geo_builders],
@@ -946,13 +941,7 @@ def main(geo_input: GeometryInput) -> GeometryOutput:
 
 
 if __name__ == "__main__":
-    geo_input = GeometryInput(
-        smooth_surface=extract_input("smooth_surface", Brep),
-        piece_count=extract_input("piece_count", int),
-        seed=extract_input("seed", int),
-        collapse_length=extract_input("collapse_length", float),
-    )
     try:
-        result, intermediates, labels = main(geo_input)
+        result, intermediates, labels = main()
     except Exception as e:
         error = e
