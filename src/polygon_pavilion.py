@@ -898,34 +898,67 @@ class HatUnroller:
 class HatSettler:
     """Builder class for settling hats for gluing and assembly."""
 
-    def __init__(self, unrolled_hats: list[UnrolledHat]) -> None:
+    def __init__(self, unrolled_hats: list[UnrolledHat], glue_width: float) -> None:
         """Initialize the hat settler."""
         self._unrolled_hats = unrolled_hats
+        self._glue_width = glue_width
 
     def build(self) -> list[Brep]:
         """Build the hat settling step."""
-        return [
-            self._join_adjacent_breps(hat.top, hat.sides) for hat in self._unrolled_hats
-        ]
+        joined_breps: list[Brep] = []
+        for unrolled_hat in self._unrolled_hats:
+            joined_brep = self._join_adjacent_breps(
+                [
+                    unrolled_hat.top,
+                    *unrolled_hat.sides,
+                    *(self._extrude_sides(s) for s in unrolled_hat.sides),
+                ],
+            )
+            joined_breps.append(joined_brep)
+        return joined_breps
 
     def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
         """Get intermediate debug geometries from this step."""
         return []
 
-    def _join_adjacent_breps(
-        self,
-        unrolled_top: Brep,
-        unfolded_sides: list[Brep],
-    ) -> Brep:
+    def _extrude_sides(self, side_brep: Brep) -> Brep:
+        """Create a rectangle extruded from the bottom line of a side Brep."""
+        # Find the bottom edge (the first edge in the brep)
+        bottom_edge = next(iter(side_brep.Edges))
+
+        # Get the start and end points of the bottom and top edges
+        bottom_pt_a = bottom_edge.PointAtStart
+        bottom_pt_b = bottom_edge.PointAtEnd
+
+        # Calculate the bottom edge direction vector
+        bottom_edge_vector = bottom_edge.TangentAtStart
+
+        # Calculate perpendicular direction on XY plane using cross product with Z axis
+        # Cross product of Z axis with edge gives perpendicular direction in XY plane
+        outward_direction = Vector3d.CrossProduct(Vector3d.ZAxis, bottom_edge_vector)
+        outward_direction *= self._glue_width
+
+        # Create the four corners of the rectangle
+        corner_a = Point3d(bottom_pt_a)
+        corner_b = Point3d(bottom_pt_b)
+        corner_c = Point3d(bottom_pt_b + outward_direction)
+        corner_d = Point3d(bottom_pt_a + outward_direction)
+
+        # Create a closed polyline curve for the rectangle
+        rect_curve = PolylineCurve([corner_a, corner_b, corner_c, corner_d, corner_a])
+
+        # Create a planar surface from the rectangle curve
+        rect_breps = list(Brep.CreatePlanarBreps(rect_curve, TOLERANCE) or [])
+        if len(rect_breps) != 1:
+            raise UnexpectedShapeError([rect_curve])
+
+        return rect_breps[0]
+
+    def _join_adjacent_breps(self, breps: list[Brep]) -> Brep:
         """Join the top and all side surfaces into a single polysurface."""
-        all_unfolded: list[Brep] = [unrolled_top]
-        all_unfolded.extend(unfolded_sides)
-
-        joined = list(Brep.JoinBreps(all_unfolded, TOLERANCE))
-
-        if len(joined) == 0:
-            raise UnexpectedShapeError(all_unfolded)
-
+        joined = list(Brep.JoinBreps(breps, TOLERANCE))
+        if len(joined) != 1:
+            raise UnexpectedShapeError(breps)
         return joined[0]
 
 
@@ -947,6 +980,7 @@ def main() -> GeometryOutput:
     piece_count = extract_input("piece_count", int)
     seed = extract_input("seed", int)
     collapse_length = extract_input("collapse_length", float)
+    glue_width = extract_input("glue_width", float)
 
     # Build geometry using builders
     surface_splitter = SurfaceSplitter(smooth_surface, piece_count, seed)
@@ -957,7 +991,7 @@ def main() -> GeometryOutput:
     hats = hat_builder.build()
     hat_unroller = HatUnroller(hats, smooth_surface)
     unrolled_hats = hat_unroller.build()
-    hat_settler = HatSettler(unrolled_hats)
+    hat_settler = HatSettler(unrolled_hats, glue_width)
     settled_hats = hat_settler.build()
 
     # Collect intermediates for debugging
