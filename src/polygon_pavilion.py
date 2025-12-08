@@ -91,7 +91,6 @@ class UnexpectedShapeError(Exception):
 class Hat(NamedTuple):
     """Represent a hat structure with base curve, top plane, and surfaces."""
 
-    base_curve: PolylineCurve
     top_plane: Plane
     top: Brep
     sides: list[Brep]
@@ -326,7 +325,6 @@ class HatBuilder:
         self._hat_previews.extend(side_surfaces)
 
         return Hat(
-            base_curve=curve,
             top_plane=top_plane,
             top=top_surface,
             sides=side_surfaces,
