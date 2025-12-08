@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from importlib import import_module
 from typing import Any, NamedTuple, Protocol, TypeVar
 
@@ -101,7 +102,7 @@ class GeometryOutput(NamedTuple):
 
     cut_lines: list[Curve]
     score_lines: list[Curve]
-    intermediates: list[list[GeometryBase | Point3d | Plane]]
+    intermediates: list[Sequence[GeometryBase | Point3d | Plane | Brep]]
     labels: list[TextDot]
 
 
@@ -133,7 +134,7 @@ class GeometryBuilder(Protocol):
         """Do the work of this geometry build step."""
         ...
 
-    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
         """Get intermediate geometries from this step for debugging."""
         ...
 
@@ -163,9 +164,9 @@ class SurfaceSplitter:
             for cell in self._voronoi_cells
         ]
 
-    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
         """Get intermediate debug geometries from this step."""
-        result: list[GeometryBase | Point3d | Plane] = []
+        result: Sequence[GeometryBase | Point3d | Plane | Brep] = []
         result.extend(self._populated_points)
         result.extend(self._voronoi_cells)
         return result
@@ -247,7 +248,7 @@ class PolygonBuilder:
         self._refined_pieces.append(polyline)
         return polyline
 
-    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
         """Get intermediate debug geometries from this step."""
         return list(self._refined_pieces)
 
@@ -332,7 +333,7 @@ class HatBuilder:
             sides=side_surfaces,
         )
 
-    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
         """Get intermediate debug geometries from this step."""
         return list(self._hat_previews)
 
@@ -728,6 +729,7 @@ class HatUnroller:
 
         # Unfold all side surfaces using their stored top_edge information
         unfolded_sides = self._unfold_all_sides(hat.sides, xform_to_world)
+        self._unrolled_hats.append(join_adjacent_breps([unrolled_top, *unfolded_sides]))
 
         return UnrolledHat(top=unrolled_top, sides=unfolded_sides)
 
@@ -886,7 +888,7 @@ class HatUnroller:
         props = AreaMassProperties.Compute(brep)
         return props.Centroid
 
-    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
         """Get intermediate debug geometries from this step."""
         return list(self._unrolled_hats)
 
@@ -952,9 +954,9 @@ class HatSettler:
 
         return LaserLines(cut_lines=cut_lines, score_lines=score_lines)
 
-    def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
         """Get intermediate debug geometries from this step."""
-        return []
+        return list(self._settled_hats)
 
     def _extrude_flags(self, side_brep: Brep) -> Flag:
         """Create a rectangle extruded from the bottom line of a side Brep."""
