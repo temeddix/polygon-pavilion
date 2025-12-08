@@ -101,6 +101,13 @@ class UnrolledHat(NamedTuple):
     sides: list[Brep]
 
 
+class Flag(NamedTuple):
+    """Represent a flag structure with base curve and surface."""
+
+    rect: Brep
+    flap: Brep
+
+
 class GeometryBuilder(Protocol):
     """Protocol for geometry build step worker classes."""
 
@@ -903,23 +910,24 @@ class HatSettler:
         unrolled_hats: list[UnrolledHat],
         glue_width: float,
         glue_inset: float,
+        flap_width: float,
     ) -> None:
         """Initialize the hat settler."""
         self._unrolled_hats = unrolled_hats
         self._glue_width = glue_width
         self._glue_inset = glue_inset
+        self._flap_width = flap_width
 
     def build(self) -> list[Brep]:
         """Build the hat settling step."""
         joined_breps: list[Brep] = []
         for unrolled_hat in self._unrolled_hats:
-            joined_brep = self._join_adjacent_breps(
-                [
-                    unrolled_hat.top,
-                    *unrolled_hat.sides,
-                    *(self._extrude_sides(s) for s in unrolled_hat.sides),
-                ],
-            )
+            # Collect all flag breps (rect and flap)
+            brep_faces = [unrolled_hat.top, *unrolled_hat.sides]
+            for side in unrolled_hat.sides:
+                flag = self._extrude_flags(side)
+                brep_faces.extend(flag)
+            joined_brep = self._join_adjacent_breps(brep_faces)
             joined_breps.append(joined_brep)
         return joined_breps
 
@@ -927,7 +935,7 @@ class HatSettler:
         """Get intermediate debug geometries from this step."""
         return []
 
-    def _extrude_sides(self, side_brep: Brep) -> Brep:
+    def _extrude_flags(self, side_brep: Brep) -> Flag:
         """Create a rectangle extruded from the bottom line of a side Brep."""
         # Find the bottom edge (the first edge in the brep)
         bottom_edge = next(iter(side_brep.Edges))
@@ -951,15 +959,22 @@ class HatSettler:
         corner_c = Point3d(bottom_pt_b + outward_direction)
         corner_d = Point3d(bottom_pt_a + outward_direction)
 
+        # Create the flap point
+        flap_pt = corner_d - bottom_edge_vector * self._flap_width
+
         # Create a closed polyline curve for the rectangle
         rect_curve = PolylineCurve([corner_a, corner_b, corner_c, corner_d, corner_a])
+        flap_curve = PolylineCurve([corner_a, corner_d, flap_pt, corner_a])
 
-        # Create a planar surface from the rectangle curve
+        # Create planar surfaces
         rect_breps = list(Brep.CreatePlanarBreps(rect_curve, TOLERANCE) or [])
         if len(rect_breps) != 1:
             raise UnexpectedShapeError([rect_curve])
+        flap_breps = list(Brep.CreatePlanarBreps(flap_curve, TOLERANCE) or [])
+        if len(flap_breps) != 1:
+            raise UnexpectedShapeError([flap_breps])
 
-        return rect_breps[0]
+        return Flag(rect=rect_breps[0], flap=flap_breps[0])
 
     def _join_adjacent_breps(self, breps: list[Brep]) -> Brep:
         """Join the top and all side surfaces into a single polysurface."""
@@ -989,6 +1004,7 @@ def main() -> GeometryOutput:
     collapse_length = extract_input("collapse_length", float)
     glue_width = extract_input("glue_width", float)
     glue_inset = extract_input("glue_inset", float)
+    flap_width = extract_input("flap_width", float)
 
     # Build geometry using builders
     surface_splitter = SurfaceSplitter(smooth_surface, piece_count, seed)
@@ -999,7 +1015,7 @@ def main() -> GeometryOutput:
     hats = hat_builder.build()
     hat_unroller = HatUnroller(hats, smooth_surface)
     unrolled_hats = hat_unroller.build()
-    hat_settler = HatSettler(unrolled_hats, glue_width, glue_inset)
+    hat_settler = HatSettler(unrolled_hats, glue_width, glue_inset, flap_width)
     settled_hats = hat_settler.build()
 
     # Collect intermediates for debugging
