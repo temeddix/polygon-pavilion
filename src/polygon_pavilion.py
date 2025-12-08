@@ -102,7 +102,7 @@ class GeometryOutput(NamedTuple):
 
     cut_lines: list[Curve]
     score_lines: list[Curve]
-    intermediates: list[Sequence[GeometryBase | Point3d | Plane | Brep]]
+    intermediates: list[Sequence[GeometryBase | Point3d | Brep]]
     labels: list[TextDot]
 
 
@@ -134,7 +134,7 @@ class GeometryBuilder(Protocol):
         """Do the work of this geometry build step."""
         ...
 
-    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Brep]:
         """Get intermediate geometries from this step for debugging."""
         ...
 
@@ -164,9 +164,9 @@ class SurfaceSplitter:
             for cell in self._voronoi_cells
         ]
 
-    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Brep]:
         """Get intermediate debug geometries from this step."""
-        result: Sequence[GeometryBase | Point3d | Plane | Brep] = []
+        result: Sequence[GeometryBase | Point3d | Brep] = []
         result.extend(self._populated_points)
         result.extend(self._voronoi_cells)
         return result
@@ -248,7 +248,7 @@ class PolygonBuilder:
         self._refined_pieces.append(polyline)
         return polyline
 
-    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Brep]:
         """Get intermediate debug geometries from this step."""
         return list(self._refined_pieces)
 
@@ -303,7 +303,7 @@ class HatBuilder:
         """Initialize the hat builder with original shape and refined pieces."""
         self._original_shape = original_shape
         self._refined_pieces = refined_pieces
-        self._hat_previews: list[Curve | Plane | Brep] = []
+        self._hat_previews: list[Curve | Brep] = []
 
     def build(self) -> list[Hat]:
         """Build Hats from a sequence of polyline curves."""
@@ -321,7 +321,6 @@ class HatBuilder:
 
         # Store intermediates for debugging
         self._hat_previews.append(curve)
-        self._hat_previews.append(top_plane)
         self._hat_previews.append(top_curve)
         self._hat_previews.append(top_surface)
         self._hat_previews.extend(side_surfaces)
@@ -333,7 +332,7 @@ class HatBuilder:
             sides=side_surfaces,
         )
 
-    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Brep]:
         """Get intermediate debug geometries from this step."""
         return list(self._hat_previews)
 
@@ -888,7 +887,7 @@ class HatUnroller:
         props = AreaMassProperties.Compute(brep)
         return props.Centroid
 
-    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Brep]:
         """Get intermediate debug geometries from this step."""
         return list(self._unrolled_hats)
 
@@ -954,7 +953,7 @@ class HatSettler:
 
         return LaserLines(cut_lines=cut_lines, score_lines=score_lines)
 
-    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Plane | Brep]:
+    def get_intermediates(self) -> Sequence[GeometryBase | Point3d | Brep]:
         """Get intermediate debug geometries from this step."""
         return list(self._settled_hats)
 
