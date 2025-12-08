@@ -47,6 +47,24 @@ def voronoi_3d(points: list[Point3d]) -> list[Brep]:
     return list(getattr(result, "cells"))
 
 
+def join_adjacent_breps(breps: list[Brep]) -> Brep:
+    """Join the top and all side surfaces into a single polysurface."""
+    joined = list(Brep.JoinBreps(breps, TOLERANCE))
+    if len(joined) != 1:
+        raise UnexpectedShapeError(breps)
+    return joined[0]
+
+
+def create_planar_brep_from_curve(curve: Curve) -> Brep:
+    """Create a planar Brep from a closed curve."""
+    if not curve.IsClosed:
+        raise UnexpectedShapeError([curve])
+    breps = list(Brep.CreatePlanarBreps(curve, TOLERANCE) or [])
+    if len(breps) != 1:
+        raise UnexpectedShapeError([curve])
+    return breps[0]
+
+
 class InvalidInputError(Exception):
     """Exception raised for invalid input types."""
 
@@ -69,27 +87,20 @@ class UnexpectedShapeError(Exception):
         super().__init__(message)
 
 
-class HatSide(NamedTuple):
-    """Represent a side of a hat structure defined by its base edge and top edge."""
-
-    top_edge: Line
-    bottom_edge: Line
-    surface: Brep
-
-
 class Hat(NamedTuple):
     """Represent a hat structure with base curve, top plane, and surfaces."""
 
     base_curve: PolylineCurve
     top_plane: Plane
     top: Brep
-    sides: list[HatSide]
+    sides: list[Brep]
 
 
 class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
-    result: list[Brep]
+    unsettled_hats: list[Brep]
+    settled_hats: list[Brep]
     intermediates: list[list[GeometryBase | Point3d | Plane]]
     labels: list[TextDot]
 
@@ -297,9 +308,7 @@ class HatBuilder:
         top_curve = self._build_top_curve(curve, top_plane)
 
         # Create surfaces
-        top_surface = self._create_surface_from_curve(top_curve)
-        if top_surface is None:
-            raise UnexpectedShapeError([top_curve])
+        top_surface = create_planar_brep_from_curve(top_curve)
         side_surfaces = self._create_hat_sides(curve, top_curve)
 
         # Store intermediates for debugging
@@ -307,7 +316,7 @@ class HatBuilder:
         self._hat_previews.append(top_plane)
         self._hat_previews.append(top_curve)
         self._hat_previews.append(top_surface)
-        self._hat_previews.extend(s.surface for s in side_surfaces)
+        self._hat_previews.extend(side_surfaces)
 
         return Hat(
             base_curve=curve,
@@ -516,29 +525,16 @@ class HatBuilder:
 
         raise UnexpectedShapeError(split_curves)
 
-    def _create_surface_from_curve(self, curve: PolylineCurve) -> Brep | None:
-        """Create a planar surface from a closed curve."""
-        if not curve.IsClosed:
-            raise UnexpectedShapeError([curve])
-
-        # Create a planar Brep from the closed curve
-        breps = list(Brep.CreatePlanarBreps(curve, TOLERANCE) or [])
-
-        if len(breps) == 0:
-            return None
-
-        return breps[0]
-
     def _create_hat_sides(
         self,
         base_curve: PolylineCurve,
         top_curve: PolylineCurve,
-    ) -> list[HatSide]:
+    ) -> list[Brep]:
         """Create side surfaces connecting base and top curve segments."""
         base_points = self._extract_vertices(base_curve)
         top_points = self._extract_vertices(top_curve)
 
-        side_surfaces: list[HatSide] = []
+        side_surfaces: list[Brep] = []
 
         for i in range(len(base_points)):
             # Get base segment
@@ -560,24 +556,14 @@ class HatBuilder:
             top_start = top_points[idx1]
             top_end = top_points[idx2]
 
-            # Create edges
-            bottom_edge = Line(base_start, base_end)
-            top_edge = Line(top_start, top_end)
-
             # Create four-sided polygon connecting base segment to top segment
             # Order: base_start -> base_end -> top_end -> top_start
             quad_points = [base_start, base_end, top_end, top_start]
             quad_curve = PolylineCurve([*quad_points, quad_points[0]])
 
             # Create surface from the quad
-            side_surface = self._create_surface_from_curve(quad_curve)
-            if side_surface is not None:
-                hat_side = HatSide(
-                    top_edge=top_edge,
-                    bottom_edge=bottom_edge,
-                    surface=side_surface,
-                )
-                side_surfaces.append(hat_side)
+            side_surface = create_planar_brep_from_curve(quad_curve)
+            side_surfaces.append(side_surface)
 
         return side_surfaces
 
@@ -751,7 +737,7 @@ class HatUnroller:
 
     def _unfold_all_sides(
         self,
-        hat_sides: list[HatSide],
+        hat_sides: list[Brep],
         xform_to_world: Transform,
     ) -> list[Brep]:
         """Unfolds all side surfaces by rotating them around their shared edges."""
@@ -766,16 +752,16 @@ class HatUnroller:
 
     def _unfold_single_side(
         self,
-        hat_side: HatSide,
+        hat_side: Brep,
         xform_to_world: Transform,
     ) -> Brep | None:
         """Unfolds a single side surface around its shared edge with the top."""
-        # Get the top edge (hinge) - already stored in HatSide
-        hinge_line = Line(hat_side.top_edge.From, hat_side.top_edge.To)
+        # Get the hinge
+        vertices = list(hat_side.Vertices)
+        hinge_start = vertices[3].Location
+        hinge_end = vertices[2].Location
 
         # Transform the hinge to world coordinates
-        hinge_start = Point3d(hinge_line.From)
-        hinge_end = Point3d(hinge_line.To)
         hinge_start.Transform(xform_to_world)
         hinge_end.Transform(xform_to_world)
 
@@ -783,7 +769,7 @@ class HatUnroller:
         rotation_xform = self._calculate_side_rotation(hinge_start, hinge_end)
 
         # Apply transforms: first to world plane, then rotate
-        unfolded_side = hat_side.surface.DuplicateBrep()
+        unfolded_side = hat_side.DuplicateBrep()
         unfolded_side.Transform(xform_to_world)
         unfolded_side.Transform(rotation_xform)
 
@@ -927,7 +913,7 @@ class HatSettler:
             for side in unrolled_hat.sides:
                 flag = self._extrude_flags(side)
                 brep_faces.extend(flag)
-            joined_brep = self._join_adjacent_breps(brep_faces)
+            joined_brep = join_adjacent_breps(brep_faces)
             joined_breps.append(joined_brep)
         return joined_breps
 
@@ -967,21 +953,10 @@ class HatSettler:
         flap_curve = PolylineCurve([corner_a, corner_d, flap_pt, corner_a])
 
         # Create planar surfaces
-        rect_breps = list(Brep.CreatePlanarBreps(rect_curve, TOLERANCE) or [])
-        if len(rect_breps) != 1:
-            raise UnexpectedShapeError([rect_curve])
-        flap_breps = list(Brep.CreatePlanarBreps(flap_curve, TOLERANCE) or [])
-        if len(flap_breps) != 1:
-            raise UnexpectedShapeError([flap_breps])
+        rect = create_planar_brep_from_curve(rect_curve)
+        flap = create_planar_brep_from_curve(flap_curve)
 
-        return Flag(rect=rect_breps[0], flap=flap_breps[0])
-
-    def _join_adjacent_breps(self, breps: list[Brep]) -> Brep:
-        """Join the top and all side surfaces into a single polysurface."""
-        joined = list(Brep.JoinBreps(breps, TOLERANCE))
-        if len(joined) != 1:
-            raise UnexpectedShapeError(breps)
-        return joined[0]
+        return Flag(rect=rect, flap=flap)
 
 
 def extract_input(name: str, expected_type: type[T]) -> T:
@@ -1029,7 +1004,8 @@ def main() -> GeometryOutput:
 
     # Return final output
     return GeometryOutput(
-        result=settled_hats,
+        unsettled_hats=[join_adjacent_breps([hat.top, *hat.sides]) for hat in hats],
+        settled_hats=settled_hats,
         intermediates=[b.get_intermediates() for b in geo_builders],
         labels=hat_unroller.get_text_dots(),
     )
@@ -1037,6 +1013,6 @@ def main() -> GeometryOutput:
 
 if __name__ == "__main__":
     try:
-        result, intermediates, labels = main()
+        unsettled_hats, settled_hats, intermediates, labels = main()
     except Exception as e:
         error = e
