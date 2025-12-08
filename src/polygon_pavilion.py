@@ -898,10 +898,16 @@ class HatUnroller:
 class HatSettler:
     """Builder class for settling hats for gluing and assembly."""
 
-    def __init__(self, unrolled_hats: list[UnrolledHat], glue_width: float) -> None:
+    def __init__(
+        self,
+        unrolled_hats: list[UnrolledHat],
+        glue_width: float,
+        glue_inset: float,
+    ) -> None:
         """Initialize the hat settler."""
         self._unrolled_hats = unrolled_hats
         self._glue_width = glue_width
+        self._glue_inset = glue_inset
 
     def build(self) -> list[Brep]:
         """Build the hat settling step."""
@@ -926,12 +932,13 @@ class HatSettler:
         # Find the bottom edge (the first edge in the brep)
         bottom_edge = next(iter(side_brep.Edges))
 
-        # Get the start and end points of the bottom and top edges
-        bottom_pt_a = bottom_edge.PointAtStart
-        bottom_pt_b = bottom_edge.PointAtEnd
-
         # Calculate the bottom edge direction vector
         bottom_edge_vector = bottom_edge.TangentAtStart
+        bottom_edge_vector.Unitize()
+
+        # Get the start and end points of the bottom and top edges
+        bottom_pt_a = bottom_edge.PointAtStart + bottom_edge_vector * self._glue_inset
+        bottom_pt_b = bottom_edge.PointAtEnd - bottom_edge_vector * self._glue_inset
 
         # Calculate perpendicular direction on XY plane using cross product with Z axis
         # Cross product of Z axis with edge gives perpendicular direction in XY plane
@@ -981,6 +988,7 @@ def main() -> GeometryOutput:
     seed = extract_input("seed", int)
     collapse_length = extract_input("collapse_length", float)
     glue_width = extract_input("glue_width", float)
+    glue_inset = extract_input("glue_inset", float)
 
     # Build geometry using builders
     surface_splitter = SurfaceSplitter(smooth_surface, piece_count, seed)
@@ -991,7 +999,7 @@ def main() -> GeometryOutput:
     hats = hat_builder.build()
     hat_unroller = HatUnroller(hats, smooth_surface)
     unrolled_hats = hat_unroller.build()
-    hat_settler = HatSettler(unrolled_hats, glue_width)
+    hat_settler = HatSettler(unrolled_hats, glue_width, glue_inset)
     settled_hats = hat_settler.build()
 
     # Collect intermediates for debugging
