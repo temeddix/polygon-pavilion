@@ -1037,12 +1037,13 @@ def main() -> GeometryOutput:
         hat_unroller,
         hat_settler,
     ]
+    intermediates = [b.get_intermediates() for b in geo_builders]
 
     # Return final output
     return GeometryOutput(
         cut_lines=settled_hats.cut_lines,
         score_lines=settled_hats.score_lines,
-        intermediates=[b.get_intermediates() for b in geo_builders],
+        intermediates=intermediates,
         labels=hat_unroller.get_text_dots(),
     )
 
