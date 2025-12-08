@@ -99,6 +99,8 @@ class Hat(NamedTuple):
 class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
+    hats: list[Hat]
+    unrolled_hats: list[Hat]
     cut_lines: list[Curve]
     score_lines: list[Curve]
     intermediates: list[Sequence[GeometryBase | Point3d | Brep]]
@@ -1038,6 +1040,8 @@ def main() -> GeometryOutput:
 
     # Return final output
     return GeometryOutput(
+        hats=hats,
+        unrolled_hats=unrolled_hats,
         cut_lines=settled_hats.cut_lines,
         score_lines=settled_hats.score_lines,
         intermediates=intermediates,
@@ -1047,6 +1051,6 @@ def main() -> GeometryOutput:
 
 if __name__ == "__main__":
     try:
-        cut_lines, score_lines, intermediates, labels = main()
+        hats, unrolled_hats, cut_lines, score_lines, intermediates, labels = main()
     except Exception as e:
         error = e
