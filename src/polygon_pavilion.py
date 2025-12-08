@@ -99,8 +99,8 @@ class Hat(NamedTuple):
 class GeometryOutput(NamedTuple):
     """Output containing the resulting hats and debug shapes."""
 
-    unsettled_hats: list[Brep]
-    settled_hats: list[Brep]
+    cut_lines: list[Curve]
+    score_lines: list[Curve]
     intermediates: list[list[GeometryBase | Point3d | Plane]]
     labels: list[TextDot]
 
@@ -117,6 +117,13 @@ class Flag(NamedTuple):
 
     rect: Brep
     flap: Brep
+
+
+class LaserLines(NamedTuple):
+    """Dataclass for storing laser cutting lines."""
+
+    cut_lines: list[Curve]
+    score_lines: list[Curve]
 
 
 class GeometryBuilder(Protocol):
@@ -903,10 +910,11 @@ class HatSettler:
         self._glue_width = glue_width
         self._glue_inset = glue_inset
         self._flap_width = flap_width
+        self._settled_hats: list[Brep] = []
 
-    def build(self) -> list[Brep]:
+    def build(self) -> LaserLines:
         """Build the hat settling step."""
-        joined_breps: list[Brep] = []
+        # Join all brep faces (top, sides, flags) into single brep per hat
         for unrolled_hat in self._unrolled_hats:
             # Collect all flag breps (rect and flap)
             brep_faces = [unrolled_hat.top, *unrolled_hat.sides]
@@ -914,8 +922,35 @@ class HatSettler:
                 flag = self._extrude_flags(side)
                 brep_faces.extend(flag)
             joined_brep = join_adjacent_breps(brep_faces)
-            joined_breps.append(joined_brep)
-        return joined_breps
+            self._settled_hats.append(joined_brep)
+
+        cut_lines: list[Curve] = []
+        score_lines: list[Curve] = []
+        for settled_hat in self._settled_hats:
+            laser_lines = self._brep_to_laser_lines(settled_hat)
+            cut_lines.extend(laser_lines.cut_lines)
+            score_lines.extend(laser_lines.score_lines)
+
+        return LaserLines(cut_lines=cut_lines, score_lines=score_lines)
+
+    def _brep_to_laser_lines(self, brep: Brep) -> LaserLines:
+        """Convert a Brep into laser cutting and scoring lines.
+
+        Edges longer than score_length are treated as cut lines,
+        while shorter edges are treated as score lines.
+        """
+        cut_lines: list[Curve] = []
+        score_lines: list[Curve] = []
+
+        for edge in brep.Edges:
+            curve = edge.DuplicateCurve()
+            should_cut = len(list(edge.AdjacentFaces())) == 1
+            if should_cut:
+                cut_lines.append(curve)
+            else:
+                score_lines.append(curve)
+
+        return LaserLines(cut_lines=cut_lines, score_lines=score_lines)
 
     def get_intermediates(self) -> list[GeometryBase | Point3d | Plane]:
         """Get intermediate debug geometries from this step."""
@@ -1004,8 +1039,8 @@ def main() -> GeometryOutput:
 
     # Return final output
     return GeometryOutput(
-        unsettled_hats=[join_adjacent_breps([hat.top, *hat.sides]) for hat in hats],
-        settled_hats=settled_hats,
+        cut_lines=settled_hats.cut_lines,
+        score_lines=settled_hats.score_lines,
         intermediates=[b.get_intermediates() for b in geo_builders],
         labels=hat_unroller.get_text_dots(),
     )
@@ -1013,6 +1048,6 @@ def main() -> GeometryOutput:
 
 if __name__ == "__main__":
     try:
-        unsettled_hats, settled_hats, intermediates, labels = main()
+        cut_lines, score_lines, intermediates, labels = main()
     except Exception as e:
         error = e
