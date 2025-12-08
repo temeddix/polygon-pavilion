@@ -105,13 +105,6 @@ class GeometryOutput(NamedTuple):
     labels: list[TextDot]
 
 
-class UnrolledHat(NamedTuple):
-    """Represent an unrolled, flat hat shape."""
-
-    top: Brep
-    sides: list[Brep]
-
-
 class Flag(NamedTuple):
     """Represent a flag structure with base curve and surface."""
 
@@ -702,12 +695,12 @@ class HatUnroller:
         self._unrolled_hats: list[Brep] = []
         self._text_dots: list[TextDot] = []
 
-    def build(self) -> list[UnrolledHat]:
+    def build(self) -> list[Hat]:
         """Build unrolled flat patterns from Hat structures."""
         unrolled = [self._unroll_hat(hat) for hat in self._hats]
         return self._arrange_in_grid(unrolled)
 
-    def _unroll_hat(self, hat: Hat) -> UnrolledHat:
+    def _unroll_hat(self, hat: Hat) -> Hat:
         """Unroll a single Hat into a flat 2D pattern using geometric properties.
 
         The top face is placed on the world XY plane, and side faces are rotated
@@ -721,14 +714,14 @@ class HatUnroller:
         unrolled_top.Transform(xform_to_world)
 
         # Transform the top plane's Z axis to determine rotation direction
-        top_normal = Vector3d(hat.top_plane.ZAxis)
-        top_normal.Transform(xform_to_world)
+        unrolled_plane = hat.top_plane
+        unrolled_plane.Transform(xform_to_world)
 
         # Unfold all side surfaces using their stored top_edge information
         unfolded_sides = self._unfold_all_sides(hat.sides, xform_to_world)
         self._unrolled_hats.append(join_adjacent_breps([unrolled_top, *unfolded_sides]))
 
-        return UnrolledHat(top=unrolled_top, sides=unfolded_sides)
+        return Hat(top_plane=unrolled_plane, top=unrolled_top, sides=unfolded_sides)
 
     def _prepare_top_transform(self, hat: Hat) -> Transform:
         """Prepare the transformation to move the top surface to the world XY plane."""
@@ -798,7 +791,7 @@ class HatUnroller:
         # Create rotation transform around the hinge edge
         return Transform.Rotation(HAT_SIDE_ANGLE, hinge_vector, hinge_start)
 
-    def _arrange_in_grid(self, breps: list[UnrolledHat]) -> list[UnrolledHat]:
+    def _arrange_in_grid(self, breps: list[Hat]) -> list[Hat]:
         """Arrange the unrolled Breps in a grid layout with spacing.
 
         Based on the largest bounding box dimensions, positioned next to the
@@ -838,7 +831,7 @@ class HatUnroller:
         grid_start_y = original_min_y
 
         # Arrange breps in grid and create labels
-        arranged_hats: list[UnrolledHat] = []
+        arranged_hats: list[Hat] = []
 
         for i, unrolled_hat in enumerate(breps):
             row = i // grid_cols
@@ -854,6 +847,8 @@ class HatUnroller:
             # Apply translation to top and all sides
             arranged_top = unrolled_hat.top.DuplicateBrep()
             arranged_top.Transform(translation)
+            arranged_plane = unrolled_hat.top_plane
+            arranged_plane.Transform(translation)
 
             arranged_sides: list[Brep] = []
             for side in unrolled_hat.sides:
@@ -861,7 +856,11 @@ class HatUnroller:
                 arranged_side.Transform(translation)
                 arranged_sides.append(arranged_side)
 
-            arranged_hat = UnrolledHat(top=arranged_top, sides=arranged_sides)
+            arranged_hat = Hat(
+                top_plane=arranged_plane,
+                top=arranged_top,
+                sides=arranged_sides,
+            )
             arranged_hats.append(arranged_hat)
 
             # Create TextDots for original and unrolled pieces
@@ -899,7 +898,7 @@ class HatSettler:
 
     def __init__(
         self,
-        unrolled_hats: list[UnrolledHat],
+        unrolled_hats: list[Hat],
         glue_width: float,
         glue_inset: float,
         flap_width: float,
